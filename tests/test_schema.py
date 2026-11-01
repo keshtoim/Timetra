@@ -2,7 +2,7 @@ import sqlite3
 import unittest
 from pathlib import Path
 
-SCHEMA = Path(__file__).parents[1] / "db" / "schema.sql"
+SCHEMA = Path(__file__).parents[1] / "timetra" / "db" / "schema.sql"
 ODD, EVEN = 1, 2
 MONDAY = 1
 FIRST_SHIFT_LESSON_1, FIRST_SHIFT_LESSON_2, FIRST_SHIFT_LESSON_6, SECOND_SHIFT_LESSON_1, SECOND_SHIFT_LESSON_2 = 1, 2, 3, 4, 5
