@@ -164,6 +164,62 @@ class PickAndGridTest(ScheduleCase):
         self.assertEqual(len(self.lessons()), 10)
 
 
+class WholeScheduleTest(ScheduleCase):
+    def open_all(self):
+        self.app.schedule_state.view = "all"
+        self.reload()
+        self.app.update()
+        return self.screen.grid_view
+
+    def test_rows_cover_every_day_and_lesson(self):
+        grid = self.open_all()
+        self.assertEqual(len(grid.rows), 5 * len(self.slots))
+        col, slot_id, _i, r = grid.cell_at(1, grid.row_tops[len(self.slots)] + 1)
+        self.assertEqual((col.day, slot_id, r), (2, self.slot, len(self.slots)))
+
+    def test_same_lesson_on_both_weeks_is_one_card(self):
+        self.screen.place(self.w1, self.col(self.c1, day=3), self.slot)
+        grid = self.open_all()
+        self.assertEqual(len(grid.cards), 1)
+        lesson = grid.cards[0][4]
+        self.assertEqual(grid.cell_at(grid.cards[0][0] + 1, grid.cards[0][1] + 1)[0].day, 3)
+        self.assertIsNotNone(self.repo.lesson_twin(lesson))
+
+    def test_different_weeks_split_cell_in_halves(self):
+        with self.conn:
+            self.repo.add_lesson(self.ver, self.w2, 1, 1, self.slot, None)
+            self.repo.add_lesson(self.ver, self.w3, 2, 1, self.slot, None)
+        grid = self.open_all()
+        self.assertEqual(len(grid.cards), 2)
+        (ox1, _a, ox2, _b, odd), (ex1, _c, ex2, _d, even) = sorted(grid.cards, key=lambda x: x[0])
+        self.assertEqual((odd["week_type_id"], even["week_type_id"]), (1, 2))
+        self.assertLess(ox2, ex1)
+        self.assertEqual(grid.week_at(ox1 + 1), 1)
+        self.assertEqual(grid.week_at(ex2 - 1), 2)
+
+    def test_different_rooms_stay_separate(self):
+        with self.conn:
+            self.repo.add_lesson(self.ver, self.w1, 1, 1, self.slot, self.r1)
+            self.repo.add_lesson(self.ver, self.w1, 2, 1, self.slot, self.r2)
+        self.assertEqual(len(self.open_all().cards), 2)
+
+    def test_move_from_whole_view_uses_row_day(self):
+        self.screen.place(self.w1, self.col(self.c1), self.slot)
+        grid = self.open_all()
+        target = grid.cell_at(grid.cards[0][0] + 1, grid.row_tops[len(self.slots) + 1] + 1)
+        self.screen.move_lesson(grid.cards[0][4], target[0], target[1])
+        self.assertEqual({(r["weekday_id"], r["lesson_slot_id"]) for r in self.lessons()}, {(2, self.slots[1]["id"])})
+
+    def test_conflict_on_twin_marks_merged_card(self):
+        with self.conn:
+            self.repo.add_lesson(self.ver, self.w1, 1, 1, self.slot, None)
+            self.repo.add_lesson(self.ver, self.w1, 2, 1, self.slot, None)
+            self.repo.add_lesson(self.ver, self.w2, 2, 1, self.slot, None)
+        grid = self.open_all()
+        merged = next(x for x in grid.cards if x[4]["workload_id"] == self.w1)
+        self.assertIsNotNone(grid._level(merged[4], self.repo.lesson_twin(merged[4])))
+
+
 class CheckAndHelpTest(ScheduleCase):
     def test_show_problem_jumps_to_schedule(self):
         with self.conn:

@@ -76,12 +76,14 @@ class ScheduleScreen(tk.Frame):
             Btn(first, "Сделать действующим", "star", self._activate, tooltip="Этот вариант будет считаться настоящим расписанием школы").pack(side="left")
 
         second = self._tool_row(box)
-        label(second, "Неделя", 9, color="muted", bg="surface").pack(side="left", padx=(0, 6))
-        Seg(second, [(ODD, "Нечётная", "Показать нечётную неделю"), (EVEN, "Чётная", "Показать чётную неделю")], s.week, lambda v: self._set("week", v)).pack(side="left")
-        label(second, "Показать", 9, color="muted", bg="surface").pack(side="left", padx=(14, 6))
+        if s.view != "all":
+            label(second, "Неделя", 9, color="muted", bg="surface").pack(side="left", padx=(0, 6))
+            Seg(second, [(ODD, "Нечётная", "Показать нечётную неделю"), (EVEN, "Чётная", "Показать чётную неделю")], s.week, lambda v: self._set("week", v)).pack(side="left", padx=(0, 14))
+        label(second, "Показать", 9, color="muted", bg="surface").pack(side="left", padx=(0, 6))
         Seg(
             second,
             [
+                ("all", "Всё расписание", "Все классы за всю неделю, чётная и нечётная недели в одной клетке"),
                 ("classes", "Все классы", "Все классы за один день"), ("week", "Один класс", "Вся неделя одного класса"),
                 ("teachers", "Учителя", "Расписание по учителям"), ("rooms", "Кабинеты", "Занятость кабинетов"),
             ],
@@ -94,7 +96,7 @@ class ScheduleScreen(tk.Frame):
             Select(second, [(x["id"], x["name"]) for x in classes], s.class_id, lambda v: self._set("class_id", v), width=8).pack(side="left", padx=8)
 
         used = sorted({x["shift_id"] for x in classes})
-        if s.view != "week" or len(used) > 1:
+        if s.view == "classes" or s.view == "teachers" or s.view == "rooms" or (s.view == "all" and len(used) > 1):
             third = self._tool_row(box)
             if len(used) > 1 and s.view != "week":
                 if s.shift not in used:
@@ -102,12 +104,14 @@ class ScheduleScreen(tk.Frame):
                 names = {x["id"]: x["name"] for x in self.repo.shifts()}
                 label(third, "Смена", 9, color="muted", bg="surface").pack(side="left", padx=(0, 6))
                 Seg(third, [(i, names[i]) for i in used], s.shift, lambda v: self._set("shift", v)).pack(side="left", padx=(0, 14))
-            if s.view != "week":
-                last = 6 if any(x["study_days"] == 6 for x in classes) else 5
-                s.day = min(s.day, last)
+            if s.view != "all":
+                s.day = min(s.day, self._last_day())
                 label(third, "День", 9, color="muted", bg="surface").pack(side="left", padx=(0, 6))
-                days = [(d["id"], d["name"]) for d in self.repo.weekdays() if d["id"] <= last]
+                days = [(d["id"], d["name"]) for d in self.repo.weekdays() if d["id"] <= self._last_day()]
                 Seg(third, days, s.day, lambda v: self._set("day", v)).pack(side="left")
+
+    def _last_day(self):
+        return 6 if any(x["study_days"] == 6 for x in self.repo.classes()) else 5
 
     def _tool_row(self, box):
         row = tk.Frame(box, bg=c["surface"])
@@ -135,11 +139,13 @@ class ScheduleScreen(tk.Frame):
             for lesson_id in problem.lesson_ids:
                 if problem.severity == CONFLICT or lesson_id not in levels:
                     levels[lesson_id] = (problem.severity, problem.title)
-        lessons = self.repo.lessons(self.version, self.state.week)
+        whole = self.state.view == "all"
+        lessons = self.repo.lessons(self.version, None if whole else self.state.week)
         scores = None
         if self.state.view in ("classes", "week"):
             scores = [day_score(lessons, col.class_id, self.state.week, col.day) for col in columns]
-        self.grid_view = ScheduleGrid(work, self, columns, slots, lessons, levels, scores)
+        days = [d for d in self.repo.weekdays() if d["id"] <= self._last_day()] if whole else None
+        self.grid_view = ScheduleGrid(work, self, columns, slots, lessons, levels, scores, days)
         self.grid_view.pack(side="left", fill="both", expand=True)
         self.grid_view.restore_position(self.state.grid_pos)
         if self.state.flash:
@@ -222,6 +228,8 @@ class ScheduleScreen(tk.Frame):
         if self.grid_view:
             cell = self.grid_view.cell_at_root(event.x_root, event.y_root)
             self.grid_view.show_drop_target(None)
+            if cell and self.grid_view.split:
+                self.state.week = self.grid_view.week_at_root(event.x_root)
             if cell:
                 self.place(wl_id, cell[0], cell[1])
 
@@ -242,7 +250,7 @@ class ScheduleScreen(tk.Frame):
             days = [d for d in self.repo.weekdays() if d["id"] <= match["study_days"]]
             return [Column(d["name"], "", d["id"], class_id=match["id"]) for d in days], self.repo.slots(match["shift_id"])
         slots = self.repo.slots(shift)
-        if s.view == "classes":
+        if s.view in ("classes", "all"):
             columns = [
                 Column(x["name"], f"{x['students_count']} уч." if x["students_count"] else "", s.day, class_id=x["id"])
                 for x in self.repo.classes(shift)
