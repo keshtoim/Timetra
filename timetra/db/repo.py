@@ -293,6 +293,28 @@ class Repo:
             return self._all(sql + " AND sc.week_type_id = ?", version_id, week_id)
         return self._all(sql, version_id)
 
+    def lessons_at(self, version_id, week_id, day_id, slot_id, skip_ids=()):
+        """Уроки, идущие одновременно с указанным слотом, включая другую смену, если время пересекается."""
+        rows = self._all(
+            f"""SELECT sc.*, w.class_id, w.subgroup, w.teacher_id, c.grade || c.letter AS class_name,
+                s.name AS subject_name, r.number AS room_number, {TEACHER_SHORT} AS teacher_short
+            FROM schedule sc
+            JOIN workload w ON w.id = sc.workload_id
+            JOIN classes c ON c.id = w.class_id
+            JOIN subjects s ON s.id = w.subject_id
+            JOIN teachers t ON t.id = w.teacher_id
+            JOIN lesson_slots a ON a.id = sc.lesson_slot_id
+            JOIN lesson_slots b ON b.id = ?
+            LEFT JOIN classrooms r ON r.id = sc.classroom_id
+            WHERE sc.version_id = ? AND sc.week_type_id = ? AND sc.weekday_id = ?
+                AND (a.id = b.id OR (a.starts_at < b.ends_at AND b.starts_at < a.ends_at))""",
+            slot_id, version_id, week_id, day_id,
+        )
+        return [r for r in rows if r["id"] not in skip_ids]
+
+    def conflict_pairs(self, version_id):
+        return self._all("SELECT * FROM schedule_conflicts WHERE version_id = ?", version_id)
+
     def lesson(self, lesson_id):
         return self._one("SELECT * FROM schedule WHERE id = ?", lesson_id)
 

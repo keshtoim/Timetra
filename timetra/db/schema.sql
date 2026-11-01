@@ -6,7 +6,7 @@ CREATE TABLE room_types (                     -- типы кабинетов
     name TEXT NOT NULL UNIQUE CHECK (name <> '') -- название типа: обычный, спортзал...
 ) STRICT;
 
-INSERT INTO room_types (name) VALUES ('Обычный');
+INSERT INTO room_types (name) VALUES ('Обычный'), ('Компьютерный класс'), ('Спортзал'), ('Лаборатория');
 
 CREATE TABLE classrooms (                     -- кабинеты школы
     id           INTEGER PRIMARY KEY,         -- идентификатор кабинета
