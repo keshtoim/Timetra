@@ -1,5 +1,6 @@
 import tkinter as tk
 
+from timetra.services.sanpin import fill_subjects, format_scores
 from timetra.ui.dialogs import FormDialog, confirm_dialog, info_dialog
 from timetra.ui.theme import colors as c
 from timetra.ui.widgets import Btn, DataTable, Scroll, Seg, label
@@ -28,6 +29,11 @@ class RefsScreen(tk.Frame):
         Seg(row, [(k, t) for k, t, _o in TABS], RefsScreen.tab, self._switch).pack(side="left")
         one = next(o for k, _t, o in TABS if k == RefsScreen.tab)
         Btn(row, f"Добавить {one}", "add", lambda: self.edit(None), "primary").pack(side="right")
+        if RefsScreen.tab == "subjects":
+            Btn(
+                row, "Вернуть баллы СанПиН", "undo", self.reset_sanpin,
+                tooltip="Заполнить баллы по таблицам 6.9–6.11 СанПиН 1.2.3685-21",
+            ).pack(side="right", padx=(0, 8))
         scroll = Scroll(self)
         scroll.pack(fill="both", expand=True)
         columns, rows = getattr(self, f"_{RefsScreen.tab}_table")()
@@ -139,26 +145,24 @@ class RefsScreen(tk.Frame):
         self._ask_delete(f"{name} класс", lambda: self.repo.delete_class(key))
 
     def _subjects_table(self):
-        grades = self.repo.grades_in_use()
         rows = []
         for s in self.repo.subjects():
-            scores = self.repo.subject_scores(s["id"])
-            rows.append({"id": s["id"], "cells": [s["name"], s["short_name"], s["room_type_name"] or "Любой", *[scores.get(g) for g in grades]]})
-        hint = "Балл сложности по таблице СанПиН"
-        return ["Название", "Коротко", "Нужен кабинет", *[(f"Балл, {g} кл.", hint) for g in grades]], rows
+            scores = format_scores(self.repo.subject_scores(s["id"]))
+            rows.append({"id": s["id"], "cells": [s["name"], s["short_name"], s["room_type_name"] or "Любой", scores]})
+        hint = "Класс и балл сложности. Например, «1–4: 8» значит 8 баллов в 1, 2, 3 и 4 классах"
+        return ["Название", "Коротко", "Нужен кабинет", ("Баллы по классам", hint)], rows
 
     def _subjects_form(self, key):
         s = next((i for i in self.repo.subjects() if i["id"] == key), None)
-        scores = self.repo.subject_scores(key) if key else {}
-        grades = self.repo.grades_in_use()
         fields = [
             {"key": "name", "label": "Название", "required": True, "value": s and s["name"]},
             {"key": "short", "label": "Короткое название", "value": s and s["short_name"], "hint": "Показывается в клетке расписания"},
             {"key": "type", "label": "Какой нужен кабинет", "type": "select", "empty": "Любой", "value": s and s["required_room_type_id"], "items": [(t["id"], t["name"]) for t in self.repo.room_types()]},
-            *[
-                {"key": f"score{g}", "label": f"Балл сложности, {g} класс", "type": "number", "min": 1, "value": scores.get(g), "hint": "Из таблицы СанПиН"}
-                for g in grades
-            ],
+            {
+                "key": "scores", "label": "Баллы сложности по классам", "type": "numbers", "min": 1,
+                "value": self.repo.subject_scores(key) if key else {}, "items": [(g, f"{g} кл.") for g in range(1, 12)],
+                "hint": "Оставьте клетку пустой, если в этом классе предмета нет.",
+            },
         ]
 
         def check(v):
@@ -166,12 +170,20 @@ class RefsScreen(tk.Frame):
                 return "Такой предмет уже есть"
             return None
 
-        def save(v):
-            # баллы параллелей, которых сейчас нет в школе, не теряем
-            merged = {**scores, **{g: v[f"score{g}"] for g in grades}}
-            self.app.mutate("Сохранено", lambda: self.repo.save_subject(key, v["name"], v["short"], v["type"], merged))
+        FormDialog(
+            self.app, "Изменить предмет" if key else "Добавить предмет", fields, check,
+            lambda v: self.app.mutate("Сохранено", lambda: self.repo.save_subject(key, v["name"], v["short"], v["type"], v["scores"])),
+        )
 
-        FormDialog(self.app, "Изменить предмет" if key else "Добавить предмет", fields, check, save)
+    def reset_sanpin(self):
+        confirm_dialog(
+            self.app, "Вернуть баллы СанПиН?",
+            "Для предметов из таблиц СанПиН баллы станут как в таблицах, недостающие предметы добавятся. "
+            "Ваши собственные предметы останутся как есть. Вернуть прежние значения можно кнопкой «Отменить».",
+            "Вернуть баллы",
+            lambda: self.app.mutate("Баллы СанПиН восстановлены", lambda: fill_subjects(self.repo, overwrite=True)),
+            icon="undo",
+        )
 
     def _subjects_delete(self, key):
         if self.repo.subject_in_use(key):

@@ -346,9 +346,6 @@ class Repo:
     def delete_lessons(self, lesson_ids: Iterable[int]) -> None:
         self.conn.executemany("DELETE FROM schedule WHERE id = ?", [(i,) for i in lesson_ids])
 
-    def grades_in_use(self) -> list[int]:
-        return [r["grade"] for r in self._all("SELECT DISTINCT grade FROM classes ORDER BY grade")]
-
     def grade_limit(self, grade) -> int | None:
         return self._one("SELECT max_daily_lessons AS n FROM grades WHERE number = ?", grade)["n"]
 

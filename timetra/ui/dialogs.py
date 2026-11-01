@@ -6,6 +6,7 @@ from timetra.ui.theme import font
 from timetra.ui.widgets import Btn, Select, label, note
 
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+NUMBERS_PER_ROW = 6
 
 
 class Dialog(tk.Toplevel):
@@ -43,7 +44,7 @@ def info_dialog(app, title, text, kind="warning"):
     return dialog
 
 
-def confirm_dialog(app, title, text, action_text, action):
+def confirm_dialog(app, title, text, action_text, action, icon="delete"):
     dialog = Dialog(app, title)
     label(dialog.body, text, bg="surface", wraplength=420, justify="left", anchor="w").pack(fill="x")
     row = dialog.footer()
@@ -52,7 +53,7 @@ def confirm_dialog(app, title, text, action_text, action):
         dialog.destroy()
         action()
 
-    Btn(row, action_text, "delete", run, "danger").pack(side="right")
+    Btn(row, action_text, icon, run, "danger").pack(side="right")
     Btn(row, "Отмена", None, dialog.destroy).pack(side="right", padx=(0, 8))
     dialog.show()
     return dialog
@@ -106,6 +107,21 @@ class FormDialog(Dialog):
                     selectcolor=c["surface"], activebackground=c["surface"], activeforeground=c["text"], anchor="w",
                 ).grid(row=i // 2, column=i % 2, sticky="w", padx=(0, 10))
                 widget[val] = var
+        elif kind == "numbers":
+            frame = tk.Frame(box, bg=c["surface"])
+            frame.pack(anchor="w")
+            widget = {}
+            for i, (val, text) in enumerate(field["items"]):
+                row, col = i // NUMBERS_PER_ROW * 2, i % NUMBERS_PER_ROW
+                label(frame, text, 8, False, "muted", "surface").grid(row=row, column=col, sticky="w", padx=(0, 4))
+                entry = tk.Entry(
+                    frame, font=font(), bg=c["surface"], fg=c["text"], insertbackground=c["text"], relief="flat",
+                    highlightthickness=1, highlightbackground=c["border"], highlightcolor=c["accent"], width=5,
+                )
+                current = (value or {}).get(val)
+                entry.insert(0, "" if current is None else str(current))
+                entry.grid(row=row + 1, column=col, padx=(0, 4), pady=(0, 4), ipady=2)
+                widget[val] = entry
         elif kind == "grid":
             frame = tk.Frame(box, bg=c["surface"])
             frame.pack(anchor="w")
@@ -140,6 +156,8 @@ class FormDialog(Dialog):
                 result[field["key"]] = widget.value()
             elif kind in ("checks", "grid"):
                 result[field["key"]] = [k for k, var in widget.items() if var.get()]
+            elif kind == "numbers":
+                result[field["key"]] = {k: entry.get().strip() for k, entry in widget.items()}
             else:
                 result[field["key"]] = widget.get().strip()
         return result
@@ -147,6 +165,17 @@ class FormDialog(Dialog):
     def _validate(self, values):
         for field in self.fields:
             kind, name, value = field.get("type", "text"), field["label"], values[field["key"]]
+            if kind == "numbers":
+                parsed = {}
+                titles = dict(field["items"])
+                for key, text in value.items():
+                    if not text:
+                        continue
+                    if not text.isdigit() or int(text) < field.get("min", 0):
+                        return f"В поле «{name}», {titles[key]}: нужно целое число от {field.get('min', 0)}"
+                    parsed[key] = int(text)
+                values[field["key"]] = parsed
+                continue
             if field.get("required") and value in ("", None):
                 return f"Заполните поле «{name}»"
             if value == "" and kind in ("number", "time"):
