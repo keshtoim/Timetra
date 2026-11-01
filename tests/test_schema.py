@@ -72,10 +72,31 @@ class SchemaTest(unittest.TestCase):
         self.place(3)
         self.assertEqual(self.conflicts(), ["class"])
 
-    def test_classroom_conflict(self):
+    def test_busy_classroom_rejected(self):
         self.place(1, room=ROOM_1)
-        self.place(5, room=ROOM_1)
-        self.assertEqual(self.conflicts(), ["classroom"])
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.place(5, room=ROOM_1)
+
+    def test_busy_classroom_rejected_across_shifts_by_time(self):
+        self.place(1, slot=FIRST_SHIFT_LESSON_6, room=ROOM_1)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.place(6, slot=SECOND_SHIFT_LESSON_1, room=ROOM_1)
+
+    def test_classroom_free_in_other_week_or_version(self):
+        self.place(1, room=ROOM_1)
+        self.place(5, week=EVEN, room=ROOM_1)
+        self.place(5, version=2, room=ROOM_1)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM schedule").fetchone()[0], 3)
+
+    def test_moving_lesson_into_busy_classroom_rejected(self):
+        self.place(1, room=ROOM_1)
+        self.place(5, slot=FIRST_SHIFT_LESSON_2, room=ROOM_1)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("UPDATE schedule SET lesson_slot_id = ? WHERE workload_id = 5", (FIRST_SHIFT_LESSON_1,))
+
+    def test_updating_lesson_does_not_clash_with_itself(self):
+        self.place(1, room=ROOM_1)
+        self.db.execute("UPDATE schedule SET classroom_id = ? WHERE workload_id = 1", (ROOM_1,))
 
     def test_unassigned_classrooms_do_not_conflict(self):
         self.place(4)

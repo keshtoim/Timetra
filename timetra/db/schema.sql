@@ -133,8 +133,8 @@ CREATE TABLE schedule_versions (              -- варианты расписа
 CREATE UNIQUE INDEX idx_schedule_versions_active ON schedule_versions (is_active) WHERE is_active = 1;
 
 -- Итоговое расписание. Урок "каждую неделю" = две строки, по одной на тип недели.
--- Накладки не запрещены на уровне БД: черновик и импорт могут их содержать,
--- их показывает schedule_conflicts.
+-- Занятый кабинет запрещён триггерами ниже. Занятый учитель и два урока у класса
+-- разрешены, это предупреждения из schedule_conflicts.
 CREATE TABLE schedule (                       -- уроки, поставленные в расписание
     id             INTEGER PRIMARY KEY,       -- идентификатор записи
     version_id     INTEGER NOT NULL REFERENCES schedule_versions (id) ON DELETE CASCADE, -- вариант расписания
@@ -147,6 +147,42 @@ CREATE TABLE schedule (                       -- уроки, поставлен�
 ) STRICT;
 
 CREATE INDEX idx_schedule_slot ON schedule (version_id, week_type_id, weekday_id, lesson_slot_id);
+
+-- Уроки разных смен сравниваем по времени, как в simultaneous_lessons
+CREATE TRIGGER trg_schedule_room_busy_insert
+BEFORE INSERT ON schedule
+WHEN NEW.classroom_id IS NOT NULL AND EXISTS (
+    SELECT 1
+    FROM schedule s
+    JOIN lesson_slots a ON a.id = s.lesson_slot_id
+    JOIN lesson_slots b ON b.id = NEW.lesson_slot_id
+    WHERE s.version_id = NEW.version_id
+        AND s.week_type_id = NEW.week_type_id
+        AND s.weekday_id = NEW.weekday_id
+        AND s.classroom_id = NEW.classroom_id
+        AND (a.id = b.id OR (a.starts_at < b.ends_at AND b.starts_at < a.ends_at))
+)
+BEGIN
+    SELECT RAISE(ABORT, 'Кабинет занят на этом уроке');
+END;
+
+CREATE TRIGGER trg_schedule_room_busy_update
+BEFORE UPDATE OF version_id, week_type_id, weekday_id, lesson_slot_id, classroom_id ON schedule
+WHEN NEW.classroom_id IS NOT NULL AND EXISTS (
+    SELECT 1
+    FROM schedule s
+    JOIN lesson_slots a ON a.id = s.lesson_slot_id
+    JOIN lesson_slots b ON b.id = NEW.lesson_slot_id
+    WHERE s.id <> NEW.id
+        AND s.version_id = NEW.version_id
+        AND s.week_type_id = NEW.week_type_id
+        AND s.weekday_id = NEW.weekday_id
+        AND s.classroom_id = NEW.classroom_id
+        AND (a.id = b.id OR (a.starts_at < b.ends_at AND b.starts_at < a.ends_at))
+)
+BEGIN
+    SELECT RAISE(ABORT, 'Кабинет занят на этом уроке');
+END;
 
 -- LEFT JOIN: урок без балла или кабинета не должен пропадать из расписания
 CREATE VIEW schedule_view AS
@@ -183,9 +219,7 @@ SELECT
     s1.id AS schedule_id_1,
     s2.id AS schedule_id_2,
     s1.workload_id AS workload_id_1,
-    s2.workload_id AS workload_id_2,
-    s1.classroom_id AS classroom_id_1,
-    s2.classroom_id AS classroom_id_2
+    s2.workload_id AS workload_id_2
 FROM schedule s1
 JOIN schedule s2
     ON s2.version_id = s1.version_id
@@ -211,11 +245,7 @@ FROM simultaneous_lessons sl
 JOIN workload w1 ON w1.id = sl.workload_id_1
 JOIN workload w2 ON w2.id = sl.workload_id_2
 WHERE w1.class_id = w2.class_id
-    AND (w1.subgroup = w2.subgroup OR w1.subgroup = 0 OR w2.subgroup = 0)
-UNION ALL
-SELECT 'classroom', sl.version_id, sl.schedule_id_1, sl.schedule_id_2
-FROM simultaneous_lessons sl
-WHERE sl.classroom_id_1 = sl.classroom_id_2;
+    AND (w1.subgroup = w2.subgroup OR w1.subgroup = 0 OR w2.subgroup = 0);
 
 -- Нагрузка класса за день. Параллельные подгруппы — один урок для класса,
 -- поэтому сначала берём максимум по слоту, чтобы не считать его дважды.
