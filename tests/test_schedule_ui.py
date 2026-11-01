@@ -1,6 +1,9 @@
 import unittest
 
 from tests.test_ui import UiCase
+from timetra.io.exchange import KINDS
+from timetra.io.tables import write_table
+from timetra.services.checks import find_problems
 from timetra.ui.dialogs import Dialog
 from timetra.ui.schedule_screen import LessonDialog
 
@@ -159,6 +162,76 @@ class PickAndGridTest(ScheduleCase):
         self.app.update()
         self.assertEqual(self.repo.conflict_pairs(self.ver), [])
         self.assertEqual(len(self.lessons()), 10)
+
+
+class CheckAndHelpTest(ScheduleCase):
+    def test_show_problem_jumps_to_schedule(self):
+        with self.conn:
+            self.repo.add_lesson(self.ver, self.w1, 2, 3, self.slots[2]["id"], None)
+            self.repo.add_lesson(self.ver, self.w2, 2, 3, self.slots[2]["id"], None)
+        self.app.go("check")
+        self.app.update()
+        screen = self.app.current_screen
+        problem = find_problems(self.repo, self.ver)[0]
+        screen.show(problem)
+        self.app.update()
+        state = self.app.schedule_state
+        self.assertEqual((self.app.screen, state.day, state.week), ("schedule", 3, 2))
+        self.assertEqual(len(state.flash), 2)
+        screen._clear_flash()
+        self.assertEqual(state.flash, set())
+
+    def test_help_shows_with_empty_and_filled_data(self):
+        self.app.go("help")
+        self.app.update()
+        self.screen._auto()
+        self.app.go("help")
+        self.app.update()
+
+
+class ExchangeUiTest(ScheduleCase):
+    def open_import(self, kind):
+        state = self.app.exchange_state
+        state.direction, state.import_kind = "import", kind
+        self.app.go("exchange")
+        self.app.update()
+        return self.app.current_screen
+
+    def test_export_preview_for_every_kind(self):
+        for kind in KINDS:
+            self.app.exchange_state.export_kind = kind.key
+            self.app.go("exchange")
+            self.app.update()
+
+    def test_import_preview_then_apply_and_undo(self):
+        path = self.tmp / "t.xlsx"
+        write_table(path, ["Фамилия", "Имя"], [["Новикова", "Светлана"], ["", "Без фамилии"]])
+        screen = self.open_import("teachers")
+        screen.load_file(path)
+        self.app.update()
+        self.assertEqual(len(self.app.exchange_state.results), 2)
+        self.app.current_screen.apply_import()
+        self.app.update()
+        self.assertIn("Новикова", [t["last_name"] for t in self.repo.teachers()])
+        self.assertIsNone(self.app.exchange_state.results)
+        self.app.undo()
+        self.assertNotIn("Новикова", [t["last_name"] for t in self.repo.teachers()])
+
+    def test_bad_file_explained(self):
+        path = self.tmp / "b.csv"
+        path.write_text("Что-то;Другое\n1;2\n", encoding="utf-8")
+        self.open_import("teachers").load_file(path)
+        self.app.update()
+        self.assertIsNone(self.app.exchange_state.results)
+        self.assertEqual(len(self.dialogs()), 1)
+        self.dialogs()[0].destroy()
+
+    def test_header_only_template_shows_note(self):
+        path = self.tmp / "e.xlsx"
+        write_table(path, ["Фамилия", "Имя"], [])
+        self.open_import("teachers").load_file(path)
+        self.app.update()
+        self.assertEqual(self.app.exchange_state.results, [])
 
 
 class LessonDialogTest(ScheduleCase):

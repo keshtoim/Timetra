@@ -6,7 +6,10 @@ from timetra.db.repo import Repo
 from timetra.services.checks import CONFLICT, find_problems
 from timetra.settings import load_settings, save_settings
 from timetra.ui import theme
+from timetra.ui.check_screen import CheckScreen
 from timetra.ui.dialogs import info_dialog
+from timetra.ui.exchange_screen import ExchangeScreen, ExchangeState
+from timetra.ui.help_screen import HelpScreen
 from timetra.ui.load_screen import LoadScreen
 from timetra.ui.refs_screen import RefsScreen
 from timetra.ui.schedule_grid import ScheduleGrid
@@ -21,9 +24,12 @@ TOAST_MS = 7000
 
 SCREENS = [
     ("schedule", "calendar", "Расписание", "Главный экран: сетка уроков по дням и классам", ScheduleScreen),
+    ("check", "warning", "Проверка", "Список накладок и других ошибок в расписании", CheckScreen),
     ("load", "book", "Нагрузка", "Кто какой предмет ведёт и сколько уроков нужно поставить", LoadScreen),
     ("refs", "list", "Справочники", "Учителя, классы, предметы, кабинеты и звонки", RefsScreen),
+    ("exchange", "swap", "Импорт и экспорт", "Загрузить данные из файла или сохранить их в файл", ExchangeScreen),
     ("settings", "settings", "Настройки", "Тема оформления, размер текста, подсказки", SettingsScreen),
+    ("help", "help", "С чего начать", "Пошаговая инструкция для первого запуска", HelpScreen),
 ]
 
 
@@ -47,17 +53,32 @@ class App(tk.Tk):
         self.settings = load_settings(settings_path)
         set_tips_enabled(self.settings.tips)
         self.title("Timetra")
+        self._set_icon()
         self.geometry("1200x760")
         self.minsize(900, 560)
         self.undo_stack: list[bytes] = []
         self.screen = "schedule"
         self.schedule_state = ScheduleState()
+        self.exchange_state = ExchangeState()
         self.version_id = next(
             (v["id"] for v in self.repo.versions() if v["is_active"]), self.repo.versions()[0]["id"]
         )
         self.toast_job = None
         self.bind_all("<MouseWheel>", self._on_wheel)
         self._build()
+
+    def _set_icon(self):
+        # значок-сетка рисуется в памяти вместо стандартного пера Tk
+        size, cell = 32, 8
+        accent, white = theme.LIGHT["accent"], "#FFFFFF"
+        rows = []
+        for y in range(size):
+            header = y < cell
+            line = [accent if header or x % cell == 0 or y % cell == 0 or x == size - 1 or y == size - 1 else white for x in range(size)]
+            rows.append("{" + " ".join(line) + "}")
+        self.icon_image = tk.PhotoImage(master=self, width=size, height=size)
+        self.icon_image.put(" ".join(rows))
+        self.iconphoto(True, self.icon_image)
 
     def _build(self):
         for child in self.winfo_children():
@@ -161,6 +182,11 @@ class App(tk.Tk):
         if self.toast_job:
             self.after_cancel(self.toast_job)
         self.toast_job = self.after(TOAST_MS, self._hide_toast)
+
+    def destroy(self):
+        if self.toast_job:
+            self.after_cancel(self.toast_job)
+        super().destroy()
 
     def _hide_toast(self):
         # окно могло быть пересобрано при смене темы, берём актуальный виджет

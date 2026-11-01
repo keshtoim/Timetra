@@ -10,7 +10,6 @@ from timetra.ui.theme import font
 from timetra.ui.widgets import Btn, Scroll, Seg, Select, badge, label, note, tip
 
 ODD, EVEN = 1, 2
-FLASH_MS = 2600
 
 
 @dataclass
