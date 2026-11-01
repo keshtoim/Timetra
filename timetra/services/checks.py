@@ -127,7 +127,8 @@ def find_problems(repo: Repo, version) -> list[Problem]:
                     ),
                 )
         subjects = qualified.setdefault(teacher, repo.teacher_subject_ids(teacher))
-        if row["subject_id"] not in subjects:
+        # пустой список значит "ещё не заполняли", иначе предупреждение висело бы на каждом уроке
+        if subjects and row["subject_id"] not in subjects:
             add(
                 ("subject", row["workload_id"]), row["week_type_id"],
                 Problem(

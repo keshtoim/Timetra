@@ -1,0 +1,212 @@
+import unittest
+
+from tests.test_ui import UiCase
+from timetra.ui.dialogs import Dialog
+from timetra.ui.schedule_screen import LessonDialog
+
+
+class ScheduleCase(UiCase):
+    def setUp(self):
+        super().setUp()
+        repo = self.repo = self.app.repo
+        self.t1 = repo.save_teacher(None, "Иванова", "Мария", "")
+        self.t2 = repo.save_teacher(None, "Петрова", "Анна", "")
+        self.s1 = repo.save_subject(None, "Математика", "Матем.", None, {5: 10})
+        self.s2 = repo.save_subject(None, "Музыка", "", None, {5: 2})
+        repo.save_room(None, "101", 30, 1)
+        repo.save_room(None, "102", 30, 1)
+        self.r1, self.r2 = [r["id"] for r in repo.rooms()]
+        repo.save_class(None, 5, "А", 1, 5, 26, None, self.r1)
+        repo.save_class(None, 5, "Б", 1, 5, 24, None, None)
+        self.c1, self.c2 = [x["id"] for x in repo.classes()]
+        self.ver = self.app.version_id
+        repo.save_workload(None, self.c1, self.s1, 0, self.t1, 4)
+        repo.save_workload(None, self.c2, self.s1, 0, self.t1, 4)
+        repo.save_workload(None, self.c2, self.s2, 0, self.t2, 2)
+        self.conn.commit()
+        self.w1, self.w2, self.w3 = [
+            next(w["id"] for w in repo.workload(self.ver) if w["class_id"] == c and w["subject_id"] == s)
+            for c, s in ((self.c1, self.s1), (self.c2, self.s1), (self.c2, self.s2))
+        ]
+        self.slots = repo.slots(1)
+        self.slot = self.slots[0]["id"]
+        self.reload()
+
+    def reload(self):
+        self.app.go("schedule")
+        self.app.update()
+        self.screen = self.app.current_screen
+
+    def col(self, class_id=None, room_id=None, teacher_id=None, day=1):
+        from timetra.ui.schedule_grid import Column
+
+        return Column("", "", day, class_id=class_id, room_id=room_id, teacher_id=teacher_id)
+
+    def lessons(self):
+        return self.repo.lessons(self.ver)
+
+    def dialogs(self):
+        return [w for w in self.app.winfo_children() if isinstance(w, Dialog)]
+
+
+class PlaceTest(ScheduleCase):
+    def test_all_views_render(self):
+        for view in ("classes", "week", "teachers", "rooms"):
+            self.screen._set("view", view)
+            self.app.update()
+            self.assertIsNotNone(self.app.current_screen.grid_view)
+
+    def test_place_on_both_weeks_with_home_room(self):
+        self.screen.place(self.w1, self.col(self.c1), self.slot)
+        rows = self.lessons()
+        self.assertEqual({r["week_type_id"] for r in rows}, {1, 2})
+        self.assertEqual({r["classroom_id"] for r in rows}, {self.r1})
+
+    def test_place_one_week_when_both_off(self):
+        self.app.schedule_state.both = False
+        self.screen.place(self.w1, self.col(self.c1), self.slot)
+        self.assertEqual([r["week_type_id"] for r in self.lessons()], [1])
+
+    def test_wrong_class_column_refused(self):
+        self.screen.place(self.w1, self.col(self.c2), self.slot)
+        self.assertEqual(self.lessons(), [])
+
+    def test_busy_teacher_placed_with_warning(self):
+        self.screen.place(self.w1, self.col(self.c1), self.slot)
+        self.reload()
+        self.screen.place(self.w2, self.col(self.c2), self.slot)
+        self.assertEqual(len(self.lessons()), 4)
+        self.reload()
+        self.assertTrue(any("два урока" in p.title for p in self.screen.problems))
+
+    def test_busy_room_refused_in_room_view(self):
+        self.screen.place(self.w1, self.col(room_id=self.r2), self.slot)
+        self.reload()
+        before = len(self.lessons())
+        self.screen.place(self.w3, self.col(room_id=self.r2), self.slot)
+        self.app.update()
+        self.assertEqual(len(self.lessons()), before)
+        self.assertEqual(len(self.dialogs()), 1)
+        self.dialogs()[0].destroy()
+
+    def test_over_limit_refused(self):
+        self.screen.place(self.w3, self.col(self.c2), self.slot)
+        self.reload()
+        self.screen.place(self.w3, self.col(self.c2), self.slots[1]["id"])
+        self.assertEqual(len(self.lessons()), 2)
+
+    def test_undo_after_place(self):
+        self.screen.place(self.w1, self.col(self.c1), self.slot)
+        self.app.undo()
+        self.assertEqual(self.lessons(), [])
+
+
+class MoveTest(ScheduleCase):
+    def setUp(self):
+        super().setUp()
+        self.screen.place(self.w1, self.col(self.c1), self.slot)
+        self.reload()
+
+    def test_move_keeps_twin_together(self):
+        self.screen.move_lesson(self.lessons()[0], self.col(self.c1, day=2), self.slots[1]["id"])
+        self.assertEqual({(r["weekday_id"], r["lesson_slot_id"]) for r in self.lessons()}, {(2, self.slots[1]["id"])})
+
+    def test_move_to_other_class_refused(self):
+        self.screen.move_lesson(self.lessons()[0], self.col(self.c2, day=2), self.slot)
+        self.assertEqual(self.lessons()[0]["weekday_id"], 1)
+
+    def test_move_into_busy_room_refused(self):
+        with self.conn:
+            self.repo.add_lesson(self.ver, self.w3, 1, 2, self.slot, self.r1)
+        self.screen.move_lesson(self.lessons()[0], self.col(self.c1, day=2), self.slot)
+        self.app.update()
+        self.assertTrue(all(r["weekday_id"] == 1 for r in self.lessons() if r["workload_id"] == self.w1))
+        self.dialogs()[0].destroy()
+
+
+class PickAndGridTest(ScheduleCase):
+    def test_cell_states(self):
+        self.screen.place(self.w1, self.col(self.c1), self.slot)
+        self.app.schedule_state.pick = self.w2
+        self.reload()
+        self.assertEqual(self.screen.cell_state(self.col(self.c2), self.slot)[0], "warn")
+        self.assertEqual(self.screen.cell_state(self.col(self.c2), self.slots[1]["id"])[0], "free")
+        self.assertEqual(self.screen.cell_state(self.col(self.c1), self.slot)[0], None)
+
+    def test_grid_hit_testing_and_click_opens_dialog(self):
+        self.screen.place(self.w1, self.col(self.c1), self.slot)
+        self.reload()
+        grid = self.screen.grid_view
+        self.app.update()
+        x1, y1, x2, y2, lesson = grid.cards[0]
+        self.assertEqual(grid.card_at(x1 + 2, y1 + 2)["id"], lesson["id"])
+        self.assertEqual(grid.cell_at(x1 + 2, y1 + 2)[1], self.slot)
+        self.screen.lesson_clicked(lesson, None)
+        self.app.update()
+        dialog = self.dialogs()[0]
+        self.assertIsInstance(dialog, LessonDialog)
+        dialog.destroy()
+
+    def test_pick_click_places(self):
+        self.app.schedule_state.pick = self.w1
+        self.reload()
+        self.screen.cell_clicked(self.col(self.c1), self.slot)
+        self.assertEqual(len(self.lessons()), 2)
+        self.assertEqual(self.app.schedule_state.pick, self.w1)
+
+    def test_auto_and_copy_version(self):
+        self.screen._auto()
+        self.app.update()
+        self.assertEqual(self.repo.conflict_pairs(self.ver), [])
+        self.assertEqual(len(self.lessons()), 10)
+
+
+class LessonDialogTest(ScheduleCase):
+    def test_new_lesson_saved(self):
+        dialog = LessonDialog(self.screen, col=self.col(self.c1), slot_id=self.slot)
+        dialog.save()
+        self.app.update()
+        self.assertEqual(len(self.lessons()), 2)
+
+    def test_busy_room_blocks_save_but_busy_teacher_does_not(self):
+        with self.conn:
+            self.repo.add_lesson(self.ver, self.w2, 1, 1, self.slot, self.r1)
+            self.repo.add_lesson(self.ver, self.w2, 2, 1, self.slot, self.r1)
+        self.reload()
+        dialog = LessonDialog(self.screen, col=self.col(self.c1), slot_id=self.slot)
+        dialog.room_select.set_value(self.r1)
+        dialog.update_notes()
+        dialog.save()
+        self.app.update()
+        self.assertTrue(dialog.winfo_exists())
+        self.assertEqual(len(self.lessons()), 2)
+        dialog.room_select.set_value(self.r2)
+        dialog.save()
+        self.app.update()
+        self.assertEqual(len(self.lessons()), 4)
+
+    def test_edit_room_and_remove(self):
+        self.screen.place(self.w1, self.col(self.c1), self.slot)
+        self.reload()
+        dialog = LessonDialog(self.screen, lesson=self.lessons()[0])
+        dialog.room_select.set_value(self.r2)
+        dialog.save()
+        self.app.update()
+        self.assertEqual({r["classroom_id"] for r in self.lessons()}, {self.r2})
+        self.reload()
+        dialog = LessonDialog(self.screen, lesson=self.lessons()[0])
+        dialog.remove()
+        self.app.update()
+        self.assertEqual(self.lessons(), [])
+
+    def test_no_candidates_explained(self):
+        self.screen.place(self.w3, self.col(self.c2), self.slot)
+        self.reload()
+        LessonDialog(self.screen, col=self.col(teacher_id=self.t2), slot_id=self.slots[1]["id"])
+        self.app.update()
+        self.assertEqual(len(self.dialogs()), 1)
+        self.dialogs()[0].destroy()
+
+
+if __name__ == "__main__":
+    unittest.main()

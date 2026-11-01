@@ -85,8 +85,12 @@ class ProblemsTest(ServicesCase):
         problems = find_problems(self.repo, self.ver)
         self.assertEqual(problems[0].severity, CONFLICT)
 
-    def test_unqualified_teacher_reported(self):
+    def test_unqualified_teacher_reported_only_if_subjects_filled(self):
         self.place(self.wl)
+        self.assertFalse(any("не отмечен" in p.title for p in find_problems(self.repo, self.ver)))
+        with self.conn:
+            other = self.repo.save_subject(None, "Музыка", "", None, {})
+            self.repo.save_teacher(self.teacher, "Иванова", "Мария", "", [other])
         self.assertTrue(any("не отмечен" in p.title for p in find_problems(self.repo, self.ver)))
 
     def test_daily_limit_reported(self):

@@ -9,6 +9,8 @@ from timetra.ui import theme
 from timetra.ui.dialogs import info_dialog
 from timetra.ui.load_screen import LoadScreen
 from timetra.ui.refs_screen import RefsScreen
+from timetra.ui.schedule_grid import ScheduleGrid
+from timetra.ui.schedule_screen import ScheduleScreen, ScheduleState
 from timetra.ui.settings_screen import SettingsScreen
 from timetra.ui.theme import colors as c
 from timetra.ui.theme import font
@@ -18,6 +20,7 @@ UNDO_LIMIT = 30
 TOAST_MS = 7000
 
 SCREENS = [
+    ("schedule", "calendar", "Расписание", "Главный экран: сетка уроков по дням и классам", ScheduleScreen),
     ("load", "book", "Нагрузка", "Кто какой предмет ведёт и сколько уроков нужно поставить", LoadScreen),
     ("refs", "list", "Справочники", "Учителя, классы, предметы, кабинеты и звонки", RefsScreen),
     ("settings", "settings", "Настройки", "Тема оформления, размер текста, подсказки", SettingsScreen),
@@ -47,7 +50,8 @@ class App(tk.Tk):
         self.geometry("1200x760")
         self.minsize(900, 560)
         self.undo_stack: list[bytes] = []
-        self.screen = "settings"
+        self.screen = "schedule"
+        self.schedule_state = ScheduleState()
         self.version_id = next(
             (v["id"] for v in self.repo.versions() if v["is_active"]), self.repo.versions()[0]["id"]
         )
@@ -156,7 +160,11 @@ class App(tk.Tk):
         box.lift()
         if self.toast_job:
             self.after_cancel(self.toast_job)
-        self.toast_job = self.after(TOAST_MS, box.place_forget)
+        self.toast_job = self.after(TOAST_MS, self._hide_toast)
+
+    def _hide_toast(self):
+        # окно могло быть пересобрано при смене темы, берём актуальный виджет
+        self.toast_box.place_forget()
 
     def _on_wheel(self, event):
         # один обработчик вместо привязок на каждую область: прокручиваем ближайшую под курсором
@@ -165,7 +173,7 @@ class App(tk.Tk):
         except (KeyError, tk.TclError):
             return
         while widget is not None:
-            if isinstance(widget, Scroll):
+            if isinstance(widget, (Scroll, ScheduleGrid)):
                 widget.wheel(event.delta, bool(event.state & 0x1))
                 return
             widget = widget.master
