@@ -1,4 +1,5 @@
 import re
+import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -11,6 +12,8 @@ GRADES = range(1, 12)
 ODD, EVEN = 1, 2
 
 ADD, SKIP, ERROR = "add", "skip", "error"
+# порядок листов совпадает с зависимостями: учителям нужны предметы, классам кабинеты и так далее
+BOOK_ORDER = ("rooms", "subjects", "teachers", "classes", "slots", "workload", "schedule")
 
 
 class RowError(Exception):
@@ -391,6 +394,10 @@ def kind_by_key(key: str) -> Kind:
     return next(k for k in KINDS if k.key == key)
 
 
+def book_kinds() -> list[Kind]:
+    return [kind_by_key(key) for key in BOOK_ORDER]
+
+
 def export_table(repo: Repo, kind: Kind, version) -> tuple[list[str], list[list]]:
     return [col.title for col in kind.columns], kind.export(repo, version)
 
@@ -441,3 +448,51 @@ def apply_rows(repo: Repo, results: list[RowResult]) -> int:
     for action in actions:
         action(repo)
     return len(actions)
+
+
+def export_workbook(repo: Repo, version) -> list[tuple[str, list[str], list[list]]]:
+    return [(kind.title, *export_table(repo, kind, version)) for kind in book_kinds()]
+
+
+def template_workbook() -> list[tuple[str, list[str], list[list]]]:
+    return [(kind.title, [col.title for col in kind.columns], []) for kind in book_kinds()]
+
+
+def workbook_help() -> list[list[str]]:
+    rows = [["Лист", "Столбец", "Обязательный", "Что писать", "Пример"]]
+    for kind in book_kinds():
+        rows.extend([kind.title, *row] for row in template_help(kind)[1:])
+    return rows
+
+
+def import_workbook(repo: Repo, sheets: dict[str, list[list[str]]], version) -> list[tuple[Kind, list[RowResult]]]:
+    """Разбирает и сразу применяет листы по порядку: нагрузке нужны учителя с предыдущего листа.
+
+    Транзакцию открывает вызывающий код.
+    """
+    found = [kind for kind in book_kinds() if kind.title.lower() in sheets]
+    if not found:
+        names = ", ".join(kind.title for kind in book_kinds())
+        raise TableError(f"В файле нет нужных листов. Листы должны называться так: {names}.")
+    done = []
+    for kind in found:
+        table = sheets[kind.title.lower()]
+        if not table:
+            continue
+        try:
+            results = parse_rows(repo, kind, table, version)
+        except TableError as error:
+            raise TableError(f"Лист «{kind.title}». {error}") from error
+        apply_rows(repo, results)
+        done.append((kind, results))
+    return done
+
+
+def preview_workbook(repo: Repo, sheets: dict[str, list[list[str]]], version) -> list[tuple[Kind, list[RowResult]]]:
+    """Пробная загрузка с откатом: иначе строки, зависящие от предыдущих листов, выглядели бы ошибками."""
+    try:
+        return import_workbook(repo, sheets, version)
+    except sqlite3.IntegrityError as error:
+        raise TableError("Данные в файле противоречат друг другу. Проверьте повторяющиеся строки.") from error
+    finally:
+        repo.conn.rollback()

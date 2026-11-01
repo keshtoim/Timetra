@@ -2,7 +2,7 @@ import unittest
 
 from tests.test_ui import UiCase
 from timetra.io.exchange import KINDS
-from timetra.io.tables import write_table
+from timetra.io.tables import write_table, write_workbook
 from timetra.services.checks import find_problems
 from timetra.ui.dialogs import Dialog
 from timetra.ui.schedule_screen import LessonDialog
@@ -265,7 +265,7 @@ class ExchangeUiTest(ScheduleCase):
         screen = self.open_import("teachers")
         screen.load_file(path)
         self.app.update()
-        self.assertEqual(len(self.app.exchange_state.results), 2)
+        self.assertEqual(len(self.app.exchange_state.results[0][1]), 2)
         self.app.current_screen.apply_import()
         self.app.update()
         self.assertIn("Новикова", [t["last_name"] for t in self.repo.teachers()])
@@ -287,7 +287,35 @@ class ExchangeUiTest(ScheduleCase):
         write_table(path, ["Фамилия", "Имя"], [])
         self.open_import("teachers").load_file(path)
         self.app.update()
-        self.assertEqual(self.app.exchange_state.results, [])
+        self.assertEqual(self.app.exchange_state.results[0][1], [])
+
+    def test_all_in_one_file_preview_apply_undo(self):
+        path = self.tmp / "all.xlsx"
+        write_workbook(path, [
+            ("Кабинеты", ["Номер"], [["301"]]),
+            ("Предметы", ["Название"], [["Химия"]]),
+            ("Учителя", ["Фамилия", "Имя", "Предметы"], [["Новикова", "Светлана", "Химия"]]),
+        ])
+        self.app.exchange_state.export_kind = "all"
+        self.app.go("exchange")
+        self.app.update()
+        screen = self.open_import("all")
+        screen.load_file(path)
+        self.app.update()
+        self.assertEqual(len(self.app.exchange_state.results), 3)
+        self.assertNotIn("301", [r["number"] for r in self.repo.rooms()])
+        self.app.current_screen.apply_import()
+        self.app.update()
+        self.assertIn("301", [r["number"] for r in self.repo.rooms()])
+        self.app.undo()
+        self.assertNotIn("301", [r["number"] for r in self.repo.rooms()])
+
+    def test_single_kind_takes_its_sheet_from_shared_file(self):
+        path = self.tmp / "all.xlsx"
+        write_workbook(path, [("Кабинеты", ["Номер"], [["301"]]), ("Учителя", ["Фамилия", "Имя"], [["Новикова", "Светлана"]])])
+        self.open_import("teachers").load_file(path)
+        self.app.update()
+        self.assertEqual(self.app.exchange_state.results[0][1][0].values[0], "Новикова")
 
 
 class LessonDialogTest(ScheduleCase):

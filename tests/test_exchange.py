@@ -3,8 +3,24 @@ import unittest
 from pathlib import Path
 
 from tests.test_repo import RepoCase
-from timetra.io.exchange import ADD, ERROR, KINDS, SKIP, apply_rows, export_table, kind_by_key, parse_rows, template_help
-from timetra.io.tables import TableError, read_table, write_table
+from timetra.io.exchange import (
+    ADD,
+    ERROR,
+    KINDS,
+    SKIP,
+    apply_rows,
+    book_kinds,
+    export_table,
+    export_workbook,
+    import_workbook,
+    kind_by_key,
+    parse_rows,
+    preview_workbook,
+    template_help,
+    template_workbook,
+    workbook_help,
+)
+from timetra.io.tables import HELP_SHEET, TableError, read_table, read_workbook, write_table, write_workbook
 
 FORMATS = (".xlsx", ".xls", ".csv", ".txt")
 
@@ -43,6 +59,78 @@ class TablesTest(unittest.TestCase):
     def test_unknown_format_rejected(self):
         with self.assertRaisesRegex(TableError, "формат"):
             read_table(self.dir / "x.pdf")
+
+
+class WorkbookTest(RepoCase):
+    def setUp(self):
+        super().setUp()
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name) / "all.xlsx"
+
+    def filled_sheets(self):
+        # листы ссылаются друг на друга: всё новое, в базе этого ещё нет
+        return {
+            "кабинеты": [["Номер", "Тип"], ["301", "Обычный"]],
+            "предметы": [["Название", "Балл 6"], ["Химия", "11"]],
+            "учителя": [["Фамилия", "Имя", "Предметы"], ["Новикова", "Светлана", "Химия"]],
+            "классы": [["Класс", "Кабинет"], ["6А", "301"]],
+            "нагрузка": [["Класс", "Предмет", "Учитель", "Уроков за 2 недели"], ["6А", "Химия", "Новикова С.", "2"]],
+            "расписание": [["Неделя", "День", "Номер урока", "Класс", "Предмет", "Кабинет"], ["Обе", "Вторник", "2", "6А", "Химия", "301"]],
+        }
+
+    def test_template_has_all_sheets_and_help(self):
+        write_workbook(self.path, template_workbook(), workbook_help())
+        sheets = read_workbook(self.path)
+        self.assertEqual(list(sheets)[:-1], [k.title.lower() for k in book_kinds()])
+        self.assertEqual(list(sheets)[-1], HELP_SHEET.lower())
+        self.assertEqual(sheets["кабинеты"][0], ["Номер", "Тип", "Мест"])
+        self.assertEqual(sheets[HELP_SHEET.lower()][0][0], "Лист")
+
+    def test_empty_template_imports_nothing(self):
+        write_workbook(self.path, template_workbook(), workbook_help())
+        results = preview_workbook(self.repo, read_workbook(self.path), self.ver)
+        self.assertEqual([r for _k, rows in results for r in rows], [])
+
+    def test_preview_sees_earlier_sheets_and_rolls_back(self):
+        results = preview_workbook(self.repo, self.filled_sheets(), self.ver)
+        self.assertEqual({r.status for _k, rows in results for r in rows}, {ADD})
+        self.assertEqual(self.repo.rooms(), [])
+        self.assertEqual(len(self.repo.subjects()), 1)
+        self.assertFalse(self.conn.in_transaction)
+
+    def test_import_applies_everything_in_order(self):
+        with self.conn:
+            import_workbook(self.repo, self.filled_sheets(), self.ver)
+        self.assertEqual(self.repo.rooms()[0]["number"], "301")
+        lessons = [x for x in self.repo.lessons(self.ver) if x["class_name"] == "6А"]
+        self.assertEqual(len(lessons), 2)
+        self.assertEqual({x["score"] for x in lessons}, {11})
+
+    def test_export_roundtrip_adds_nothing_new(self):
+        with self.conn:
+            self.repo.add_lesson(self.ver, self.wl, 1, 1, self.slot, None)
+            self.repo.add_lesson(self.ver, self.wl, 2, 1, self.slot, None)
+        write_workbook(self.path, export_workbook(self.repo, self.ver))
+        results = preview_workbook(self.repo, read_workbook(self.path), self.ver)
+        for kind, rows in results:
+            self.assertNotIn(ERROR, {r.status for r in rows}, kind.key)
+            if kind.key != "slots":
+                self.assertNotIn(ADD, {r.status for r in rows}, kind.key)
+
+    def test_no_known_sheets_explained(self):
+        with self.assertRaisesRegex(TableError, "листов"):
+            preview_workbook(self.repo, {"лист1": [["А"]]}, self.ver)
+
+    def test_bad_sheet_named_in_error(self):
+        with self.assertRaisesRegex(TableError, "Лист «Учителя»"):
+            preview_workbook(self.repo, {"учителя": [["Имя"], ["Мария"]]}, self.ver)
+
+    def test_only_xlsx_allowed(self):
+        with self.assertRaisesRegex(TableError, "xlsx"):
+            read_workbook(self.path.with_suffix(".csv"))
+        with self.assertRaisesRegex(TableError, "xlsx"):
+            write_workbook(self.path.with_suffix(".xls"), template_workbook())
 
 
 class ExchangeTest(RepoCase):

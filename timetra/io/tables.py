@@ -4,6 +4,8 @@ from pathlib import Path
 
 CSV_DELIMITERS = ";,\t"
 TEXT_ENCODINGS = ("utf-8-sig", "cp1251")  # файлы из русского Excel часто в cp1251
+HELP_SHEET = "Как заполнять"
+MAX_COLUMN_WIDTH = 60
 
 
 class TableError(Exception):
@@ -48,6 +50,43 @@ def read_table(path: Path) -> list[list[str]]:
     return [row for row in cleaned if any(row)]
 
 
+def read_workbook(path: Path) -> dict[str, list[list[str]]]:
+    """Все листы .xlsx: название листа в нижнем регистре -> строки, порядок листов сохраняется."""
+    if path.suffix.lower() != ".xlsx":
+        raise TableError("Файл с несколькими листами должен быть в формате .xlsx.")
+    try:
+        import openpyxl
+
+        book = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        try:
+            sheets = {sheet.title.strip().lower(): list(sheet.iter_rows(values_only=True)) for sheet in book.worksheets}
+        finally:
+            book.close()
+    except PermissionError as error:
+        raise TableError("Файл открыт в другой программе. Закройте его и попробуйте ещё раз.") from error
+    except OSError as error:
+        raise TableError("Файл не удалось открыть.") from error
+    except Exception as error:
+        raise TableError("Файл повреждён или это не таблица. Попробуйте скачать шаблон и заполнить его.") from error
+    result = {}
+    for title, rows in sheets.items():
+        cleaned = [[_cell_to_text(v) for v in row] for row in rows]
+        result[title] = [row for row in cleaned if any(row)]
+    return result
+
+
+def write_workbook(path: Path, sheets: list[tuple[str, list[str], list[list]]], help_rows=None) -> None:
+    """Несколько листов в одном .xlsx: (название, заголовок, строки)."""
+    if path.suffix.lower() != ".xlsx":
+        raise TableError("Файл с несколькими листами можно сохранить только в формате .xlsx.")
+    try:
+        _write_xlsx_sheets(path, sheets, help_rows)
+    except PermissionError as error:
+        raise TableError("Файл открыт в другой программе. Закройте его и попробуйте ещё раз.") from error
+    except OSError as error:
+        raise TableError("Файл не удалось сохранить. Выберите другую папку.") from error
+
+
 def _read_xlsx(path: Path):
     import openpyxl
 
@@ -87,7 +126,7 @@ def write_table(path: Path, head: list[str], rows: list[list], help_rows: list[l
     suffix = path.suffix.lower()
     try:
         if suffix == ".xlsx":
-            _write_xlsx(path, head, rows, help_rows)
+            _write_xlsx_sheets(path, [("Данные", head, rows)], help_rows)
         elif suffix == ".xls":
             _write_xls(path, head, rows, help_rows)
         elif suffix in (".csv", ".txt"):
@@ -104,31 +143,29 @@ def write_table(path: Path, head: list[str], rows: list[list], help_rows: list[l
         raise TableError("Файл не удалось сохранить. Выберите другую папку.") from error
 
 
-def _write_xlsx(path, head, rows, help_rows):
+def _write_xlsx_sheets(path, sheets, help_rows):
     import openpyxl
-    from openpyxl.styles import Font
 
     book = openpyxl.Workbook()
-    sheet = book.active
-    sheet.title = "Данные"
-    sheet.append(head)
+    book.remove(book.active)
+    for title, head, rows in sheets:
+        _fill_xlsx_sheet(book.create_sheet(title), [head, *rows])
+    if help_rows:
+        _fill_xlsx_sheet(book.create_sheet(HELP_SHEET), help_rows)
+    book.save(path)
+
+
+def _fill_xlsx_sheet(sheet, table):
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+
+    for row in table:
+        sheet.append(row)
     for cell in sheet[1]:
         cell.font = Font(bold=True)
-    for row in rows:
-        sheet.append(row)
-    table = [head, *rows]
-    for i in range(len(head)):
+    for i in range(len(table[0])):
         width = max(len(str(r[i])) if i < len(r) and r[i] is not None else 0 for r in table)
-        sheet.column_dimensions[openpyxl.utils.get_column_letter(i + 1)].width = width + 3
-    if help_rows:
-        notes = book.create_sheet("Как заполнять")
-        for row in help_rows:
-            notes.append(row)
-        for cell in notes[1]:
-            cell.font = Font(bold=True)
-        for column, width in zip("ABCD", (24, 14, 60, 24)):
-            notes.column_dimensions[column].width = width
-    book.save(path)
+        sheet.column_dimensions[get_column_letter(i + 1)].width = min(width, MAX_COLUMN_WIDTH) + 3
 
 
 def _write_xls(path, head, rows, help_rows):
@@ -144,7 +181,7 @@ def _write_xls(path, head, rows, help_rows):
         for col, value in enumerate(row):
             sheet.write(r, col, value)
     if help_rows:
-        notes = book.add_sheet("Как заполнять")
+        notes = book.add_sheet(HELP_SHEET)
         for r, row in enumerate(help_rows):
             for col, value in enumerate(row):
                 notes.write(r, col, value, bold if r == 0 else xlwt.Style.default_style)
