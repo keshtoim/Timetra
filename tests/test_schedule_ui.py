@@ -5,7 +5,7 @@ from timetra.io.exchange import KINDS
 from timetra.io.tables import write_table, write_workbook
 from timetra.services.checks import find_problems
 from timetra.ui.dialogs import Dialog
-from timetra.ui.schedule_screen import LessonDialog
+from timetra.ui.schedule_screen import ComposeDialog, LessonDialog
 
 
 class ScheduleCase(UiCase):
@@ -158,10 +158,26 @@ class PickAndGridTest(ScheduleCase):
         self.assertEqual(self.app.schedule_state.pick, self.w1)
 
     def test_auto_and_copy_version(self):
-        self.screen._auto()
+        self.screen.compose(False, "even")
         self.app.update()
         self.assertEqual(self.repo.conflict_pairs(self.ver), [])
         self.assertEqual(len(self.lessons()), 10)
+        self.dialogs()[0].destroy()
+
+    def test_compose_dialog_rebuild_replaces_lessons_and_undo_restores(self):
+        with self.conn:
+            self.repo.add_lesson(self.ver, self.w1, 1, 5, self.slots[6]["id"], None)
+        self.reload()
+        dialog = ComposeDialog(self.screen)
+        dialog.mode.set_value(True)
+        dialog.update_notes()
+        dialog.run()
+        self.app.update()
+        self.assertFalse(any(r["lesson_slot_id"] == self.slots[6]["id"] for r in self.lessons()))
+        self.assertEqual(len(self.lessons()), 10)
+        self.dialogs()[0].destroy()
+        self.app.undo()
+        self.assertEqual(len(self.lessons()), 1)
 
 
 class WholeScheduleTest(ScheduleCase):
@@ -240,7 +256,8 @@ class CheckAndHelpTest(ScheduleCase):
     def test_help_shows_with_empty_and_filled_data(self):
         self.app.go("help")
         self.app.update()
-        self.screen._auto()
+        self.screen.compose(False, "even")
+        self.dialogs()[0].destroy()
         self.app.go("help")
         self.app.update()
 

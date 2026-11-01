@@ -1,7 +1,7 @@
 import tkinter as tk
 from dataclasses import dataclass, field
 
-from timetra.services.autoplace import auto_place, pick_room
+from timetra.services.autoplace import PEAK_EVEN, PEAK_TUE_WED, PEAK_WED_THU, auto_place, pick_room
 from timetra.services.checks import CONFLICT, check_placement, day_score, find_problems
 from timetra.ui.dialogs import Dialog, FormDialog, info_dialog
 from timetra.ui.schedule_grid import Column, ScheduleGrid
@@ -10,6 +10,7 @@ from timetra.ui.theme import font
 from timetra.ui.widgets import Btn, Scroll, Seg, Select, badge, label, note, tip
 
 ODD, EVEN = 1, 2
+MISSING_SHOWN = 5
 
 
 @dataclass
@@ -72,6 +73,10 @@ class ScheduleScreen(tk.Frame):
             self.version, self._set_version, tooltip="Можно хранить несколько вариантов расписания и сравнивать их",
         ).pack(side="left")
         Btn(first, "Копия варианта", "copy", self._copy_version, tooltip="Создать копию этого варианта, чтобы пробовать изменения").pack(side="left", padx=8)
+        Btn(
+            first, "Составить расписание", "wand", lambda: ComposeDialog(self), "primary",
+            "Программа сама расставит уроки всех классов на все дни с учётом баллов сложности",
+        ).pack(side="right")
         if not next(v for v in versions if v["id"] == self.version)["is_active"]:
             Btn(first, "Сделать действующим", "star", self._activate, tooltip="Этот вариант будет считаться настоящим расписанием школы").pack(side="left")
 
@@ -185,7 +190,6 @@ class ScheduleScreen(tk.Frame):
         )
         check.pack(fill="x", padx=6)
         tip(check, "Обычно урок идёт каждую неделю. Снимите галочку для предмета раз в две недели")
-        Btn(panel, "Расставить автоматически", "wand", self._auto, tooltip="Программа сама поставит оставшиеся уроки туда, где нет накладок").pack(fill="x", padx=10, pady=(4, 6))
         scroll = Scroll(panel, bg="surface")
         scroll.pack(fill="both", expand=True, padx=(10, 0), pady=(0, 8))
         for wl in items:
@@ -292,18 +296,27 @@ class ScheduleScreen(tk.Frame):
     def _activate(self):
         self.app.mutate("Этот вариант теперь действующий", lambda: self.repo.set_active_version(self.version))
 
-    def _auto(self):
-        placed = [0]
+    def compose(self, rebuild: bool, peak: str):
+        result = []
 
         def action():
-            placed[0] = auto_place(self.repo, self.version, self.state.class_id if self.state.view == "week" else None)
+            if rebuild:
+                self.repo.delete_version_lessons(self.version)
+            result.append(auto_place(self.repo, self.version, peak))
 
         self.state.pick = None
-        self.app.mutate("Расстановка выполнена", action)
-        self.app.toast(
-            f"Поставлено уроков: {placed[0]}" if placed[0] else "Свободных мест без накладок не нашлось",
-            can_undo=bool(placed[0]),
-        )
+        if not self.app.mutate("Расписание составлено", action):
+            return
+        report = result[0]
+        lines = [f"Поставлено уроков: {report.placed}."]
+        if report.missing:
+            shown = ", ".join(report.missing[:MISSING_SHOWN])
+            more = f" и ещё {len(report.missing) - MISSING_SHOWN}" if len(report.missing) > MISSING_SHOWN else ""
+            lines.append(f"Не нашлось места без накладок: {shown}{more}. Они остались в списке «Ещё не поставлено».")
+        if report.no_scores:
+            lines.append(f"Нет баллов сложности: {', '.join(report.no_scores)}. Эти предметы считались самыми лёгкими.")
+        kind = "warning" if report.missing or report.no_scores else "ok"
+        info_dialog(self.app, "Расписание составлено", "\n\n".join(lines), kind)
 
     def unpick(self):
         if self.state.pick:
@@ -400,6 +413,57 @@ class ScheduleScreen(tk.Frame):
             self.place(self.state.pick, col, slot_id)
         else:
             LessonDialog(self, col=col, slot_id=slot_id)
+
+
+class ComposeDialog(Dialog):
+    def __init__(self, screen):
+        self.screen = screen
+        super().__init__(screen.app, "Составить расписание")
+        label(
+            self.body,
+            "Программа расставит уроки всех классов на все дни: трудные предметы ближе к 2–4 уроку, "
+            "нагрузка по баллам сложности распределяется между днями. Результат можно поправить вручную или отменить.",
+            bg="surface", wraplength=440, justify="left", anchor="w",
+        ).pack(fill="x", pady=(0, 10))
+        label(self.body, "Что сделать", 9, color="muted", bg="surface", anchor="w").pack(fill="x")
+        self.mode = Select(
+            self.body,
+            [(False, "Поставить только то, что ещё не поставлено"), (True, "Составить заново: убрать все уроки этого варианта")],
+            False, lambda _v: self.update_notes(), width=52,
+        )
+        self.mode.pack(fill="x", pady=(0, 8))
+        label(self.body, "Самые нагруженные дни", 9, color="muted", bg="surface", anchor="w").pack(fill="x")
+        self.peak = Select(
+            self.body,
+            [(PEAK_EVEN, "Нагрузка поровну"), (PEAK_TUE_WED, "Вторник и среда"), (PEAK_WED_THU, "Среда и четверг")],
+            PEAK_EVEN, width=52, tooltip="Выберите по правилам вашей школы",
+        )
+        self.peak.pack(fill="x", pady=(0, 8))
+        self.notes = tk.Frame(self.body, bg=c["surface"])
+        self.notes.pack(fill="x")
+        row = self.footer()
+        Btn(row, "Составить", "wand", self.run, "primary").pack(side="right")
+        Btn(row, "Отмена", None, self.destroy).pack(side="right", padx=(0, 8))
+        self.update_notes()
+        self.show()
+
+    def update_notes(self):
+        for child in self.notes.winfo_children():
+            child.destroy()
+        if self.mode.value():
+            count = len(self.screen.repo.lessons(self.screen.version))
+            note(self.notes, f"Будут убраны уроки: {count}. Вернуть их можно кнопкой «Отменить».", "warning").pack(fill="x", pady=(0, 4))
+        missing = []
+        for wl in self.screen.workload_by_id.values():
+            if not self.screen.repo.subject_scores(wl["subject_id"]).get(wl["grade"]) and wl["subject_name"] not in missing:
+                missing.append(wl["subject_name"])
+        if missing:
+            note(self.notes, f"Нет баллов сложности: {', '.join(missing)}. Заполните их в «Справочниках», иначе эти предметы будут считаться самыми лёгкими.", "warning").pack(fill="x", pady=(0, 4))
+
+    def run(self):
+        rebuild, peak = self.mode.value(), self.peak.value()
+        self.destroy()
+        self.screen.compose(rebuild, peak)
 
 
 class LessonDialog(Dialog):

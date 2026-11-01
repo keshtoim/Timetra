@@ -340,6 +340,9 @@ class Repo:
             (day_id, slot_id, room_id, lesson_id),
         )
 
+    def delete_version_lessons(self, version_id) -> None:
+        self.conn.execute("DELETE FROM schedule WHERE version_id = ?", (version_id,))
+
     def delete_lessons(self, lesson_ids: Iterable[int]) -> None:
         self.conn.executemany("DELETE FROM schedule WHERE id = ?", [(i,) for i in lesson_ids])
 
