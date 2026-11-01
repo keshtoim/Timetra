@@ -1,11 +1,16 @@
+import ctypes
+
 from timetra.db.connection import connect, default_db_path
 from timetra.ui.app import App
 
 
 def main() -> None:
-    conn = connect(default_db_path())
+    # иначе Windows растягивает окно картинкой и текст получается мутным
+    ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    db_path = default_db_path()
+    conn = connect(db_path)
     try:
-        App(conn).mainloop()
+        App(conn, db_path.with_name("settings.json")).mainloop()
     finally:
         conn.close()
 
