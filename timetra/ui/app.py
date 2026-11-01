@@ -7,6 +7,8 @@ from timetra.services.checks import CONFLICT, find_problems
 from timetra.settings import load_settings, save_settings
 from timetra.ui import theme
 from timetra.ui.dialogs import info_dialog
+from timetra.ui.load_screen import LoadScreen
+from timetra.ui.refs_screen import RefsScreen
 from timetra.ui.settings_screen import SettingsScreen
 from timetra.ui.theme import colors as c
 from timetra.ui.theme import font
@@ -16,6 +18,8 @@ UNDO_LIMIT = 30
 TOAST_MS = 7000
 
 SCREENS = [
+    ("load", "book", "Нагрузка", "Кто какой предмет ведёт и сколько уроков нужно поставить", LoadScreen),
+    ("refs", "list", "Справочники", "Учителя, классы, предметы, кабинеты и звонки", RefsScreen),
     ("settings", "settings", "Настройки", "Тема оформления, размер текста, подсказки", SettingsScreen),
 ]
 

@@ -4,6 +4,7 @@ from pathlib import Path
 
 from timetra.db.connection import connect
 from timetra.ui.app import SCREENS, App
+from timetra.ui.dialogs import FormDialog
 
 
 class UiCase(unittest.TestCase):
@@ -44,6 +45,97 @@ class ShellTest(UiCase):
         self.assertFalse(self.app.mutate("x", lambda: self.app.repo.save_room(None, "101", 30, 1)))
         self.assertEqual(len(self.app.repo.rooms()), 1)
         self.assertEqual(self.app.undo_stack, [])
+
+
+class RefsTest(UiCase):
+    def open_form(self, tab, key=None):
+        from timetra.ui.refs_screen import RefsScreen
+
+        RefsScreen.tab = tab
+        self.app.go("refs")
+        self.app.update()
+        self.app.current_screen.edit(key)
+        self.app.update()
+        return next(w for w in self.app.winfo_children() if isinstance(w, FormDialog))
+
+    def fill(self, form, **values):
+        for key, value in values.items():
+            widget = form.inputs[key]
+            widget.delete(0, "end")
+            widget.insert(0, value)
+
+    def test_tabs_render_with_data(self):
+        from timetra.ui.refs_screen import TABS, RefsScreen
+
+        repo = self.app.repo
+        teacher = repo.save_teacher(None, "Иванова", "Мария", "")
+        repo.save_subject(None, "Математика", "", None, {5: 10})
+        repo.save_room(None, "101", 30, 1)
+        repo.save_class(None, 5, "А", 1, 5, 26, teacher, repo.rooms()[0]["id"])
+        self.conn.commit()
+        for key, *_rest in TABS:
+            RefsScreen.tab = key
+            self.app.go("refs")
+            self.app.update()
+
+    def test_add_room_through_form(self):
+        form = self.open_form("rooms")
+        self.fill(form, number="301", capacity="20")
+        form.submit()
+        self.app.update()
+        self.assertEqual(self.app.repo.rooms()[0]["number"], "301")
+
+    def test_form_shows_error_and_stays_open(self):
+        form = self.open_form("rooms")
+        form.submit()
+        self.app.update()
+        self.assertIn("Номер", form.error.cget("text"))
+        self.assertTrue(form.winfo_exists())
+        form.destroy()
+
+    def test_slot_time_validated(self):
+        form = self.open_form("slots")
+        self.fill(form, start="25:00")
+        form.submit()
+        self.assertIn("время", form.error.cget("text"))
+        form.destroy()
+
+    def test_teacher_with_workload_not_deleted(self):
+        from timetra.ui.refs_screen import RefsScreen
+
+        repo = self.app.repo
+        teacher = repo.save_teacher(None, "Иванова", "Мария", "")
+        subject = repo.save_subject(None, "Математика", "", None, {})
+        repo.save_class(None, 5, "А", 1, 5, None, None, None)
+        repo.save_workload(None, repo.classes()[0]["id"], subject, 0, teacher, 2)
+        self.conn.commit()
+        RefsScreen.tab = "teachers"
+        self.app.go("refs")
+        self.app.current_screen.delete(teacher)
+        self.app.update()
+        self.assertEqual(len(repo.teachers()), 1)
+
+
+class LoadTest(UiCase):
+    def test_add_workload_and_badge(self):
+        repo = self.app.repo
+        teacher = repo.save_teacher(None, "Иванова", "Мария", "")
+        repo.save_subject(None, "Математика", "", None, {})
+        repo.save_class(None, 5, "А", 1, 5, None, None, None)
+        self.conn.commit()
+        self.app.go("load")
+        self.app.update()
+        self.app.current_screen.edit(None)
+        form = next(w for w in self.app.winfo_children() if isinstance(w, FormDialog))
+        form.submit()
+        self.app.update()
+        self.assertEqual(repo.workload(self.app.version_id)[0]["teacher_id"], teacher)
+
+    def test_empty_refs_explained(self):
+        self.app.go("load")
+        self.app.current_screen.edit(None)
+        self.app.update()
+        self.assertEqual(self.app.repo.workload(self.app.version_id), [])
 
 
 if __name__ == "__main__":
