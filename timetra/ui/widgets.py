@@ -14,6 +14,9 @@ ICONS = {
 
 tips_enabled = True
 _TIP_DELAY_MS = 500
+RADIUS = 7
+CORNER_SAMPLES = 4
+SEG_GAP = 3
 
 
 def set_tips_enabled(value: bool) -> None:
@@ -65,7 +68,83 @@ def tip(widget: tk.Misc, text: str | None) -> None:
         Tooltip(widget, text)
 
 
-class Btn(tk.Frame):
+def _blend(a: str, b: str, share: float) -> str:
+    channels = [int(a[i:i + 2], 16) * share + int(b[i:i + 2], 16) * (1 - share) for i in (1, 3, 5)]
+    return "#%02x%02x%02x" % tuple(round(x) for x in channels)
+
+
+def _corner_image(widget, right: bool, bottom: bool, fill: str, border: str, outside: str) -> tk.PhotoImage:
+    """Угол со сглаживанием: у Canvas его нет, скруглённый полигон получается зубчатым."""
+    cache = widget._root().__dict__.setdefault("round_corners", {})
+    key = (right, bottom, fill, border, outside)
+    if key in cache:
+        return cache[key]
+    samples = range(CORNER_SAMPLES)
+    rows = []
+    for y in range(RADIUS):
+        row = []
+        for x in range(RADIUS):
+            inner = edge = 0
+            for sy in samples:
+                for sx in samples:
+                    dx = RADIUS - (x + (sx + 0.5) / CORNER_SAMPLES)
+                    dy = RADIUS - (y + (sy + 0.5) / CORNER_SAMPLES)
+                    distance = (dx * dx + dy * dy) ** 0.5
+                    if distance <= RADIUS - 1:
+                        inner += 1
+                    elif distance <= RADIUS:
+                        edge += 1
+            total = CORNER_SAMPLES * CORNER_SAMPLES
+            color = _blend(fill, outside, inner / total)
+            if edge:
+                # доля рамки поверх уже смешанного цвета
+                color = _blend(border, color, edge / total)
+            row.append(color)
+        rows.append(row[::-1] if right else row)
+    if bottom:
+        rows.reverse()
+    image = tk.PhotoImage(master=widget._root(), width=RADIUS, height=RADIUS)
+    image.put(" ".join("{" + " ".join(row) + "}" for row in rows))
+    cache[key] = image
+    return image
+
+
+class RoundFrame(tk.Canvas):
+    """Контейнер со скруглёнными углами. Содержимое должно отступать от краёв, иначе закроет углы."""
+
+    def __init__(self, parent, fill, border, **kw):
+        super().__init__(parent, bg=parent.cget("bg"), highlightthickness=0, width=1, height=1, **kw)
+        self.fill_color, self.border_color = fill, border
+        self.bind("<Configure>", lambda _e: self._draw())
+
+    def _draw(self):
+        self.delete("all")
+        w, h = self.winfo_width(), self.winfo_height()
+        if w < RADIUS * 2 or h < RADIUS * 2:
+            return
+        fill, border, outside = self.fill_color, self.border_color, self.cget("bg")
+        self.create_rectangle(RADIUS, 0, w - RADIUS, h, fill=fill, outline="")
+        self.create_rectangle(0, RADIUS, w, h - RADIUS, fill=fill, outline="")
+        self.create_line(RADIUS, 0, w - RADIUS, 0, fill=border)
+        self.create_line(RADIUS, h - 1, w - RADIUS, h - 1, fill=border)
+        self.create_line(0, RADIUS, 0, h - RADIUS, fill=border)
+        self.create_line(w - 1, RADIUS, w - 1, h - RADIUS, fill=border)
+        for right in (False, True):
+            for bottom in (False, True):
+                x, y = w - RADIUS if right else 0, h - RADIUS if bottom else 0
+                image = _corner_image(self, right, bottom, fill, border, outside)
+                self.create_image(x, y, image=image, anchor="nw")
+
+    def paint(self, fill=None, border=None):
+        self.fill_color = fill or self.fill_color
+        self.border_color = border or self.border_color
+        for child in self.winfo_children():
+            if isinstance(child, tk.Label):
+                child.configure(bg=self.fill_color)
+        self._draw()
+
+
+class Btn(RoundFrame):
     """Кнопка со значком и подписью: у tk.Button нет разных шрифтов для значка и текста."""
 
     def __init__(self, parent, text, icon=None, command=None, kind="normal", tooltip=None, disabled=False):
@@ -78,10 +157,7 @@ class Btn(tk.Frame):
         self.command = None if disabled else command
         if disabled:
             fg = c["muted"]
-        super().__init__(
-            parent, bg=self.bg_color, highlightthickness=1, highlightbackground=border, highlightcolor=c["accent"],
-            takefocus=not disabled, cursor="arrow" if disabled else "hand2",
-        )
+        super().__init__(parent, self.bg_color, border, takefocus=not disabled, cursor="arrow" if disabled else "hand2")
         self.parts = [self]
         if icon:
             label = tk.Label(self, text=ICONS[icon], font=icon_font(), bg=self.bg_color, fg=fg)
@@ -93,17 +169,13 @@ class Btn(tk.Frame):
         self.hover_color = self.bg_color if kind == "primary" or disabled else c["hover"]
         for part in self.parts:
             part.bind("<ButtonRelease-1>", self._click)
-            part.bind("<Enter>", lambda _e: self._paint(self.hover_color))
-            part.bind("<Leave>", lambda _e: self._paint(self.bg_color))
+            part.bind("<Enter>", lambda _e: self.paint(self.hover_color))
+            part.bind("<Leave>", lambda _e: self.paint(self.bg_color))
         self.bind("<Return>", self._click)
         self.bind("<space>", self._click)
-        self.bind("<FocusIn>", lambda _e: self.configure(highlightbackground=c["accent"]))
-        self.bind("<FocusOut>", lambda _e: self.configure(highlightbackground=border))
+        self.bind("<FocusIn>", lambda _e: self.paint(border=c["accent"]))
+        self.bind("<FocusOut>", lambda _e: self.paint(border=border))
         tip(self, tooltip)
-
-    def _paint(self, color):
-        for part in self.parts:
-            part.configure(bg=color)
 
     def _click(self, _event=None):
         if self.command:
@@ -114,22 +186,26 @@ class Seg(tk.Frame):
     """Группа кнопок, из которых выбрана одна."""
 
     def __init__(self, parent, options, value, command):
-        super().__init__(parent, bg=c["border"], highlightthickness=0)
+        super().__init__(parent, bg=parent.cget("bg"), highlightthickness=0)
         for i, option in enumerate(options):
             val, text, *rest = option
             selected = val == value
+            fill = c["accent"] if selected else c["surface"]
+            box = RoundFrame(self, fill, c["accent"] if selected else c["border"], cursor="hand2")
+            box.grid(row=0, column=i, padx=(0, 0 if i == len(options) - 1 else SEG_GAP))
             label = tk.Label(
-                self, text=text, font=font(10, selected), padx=10, pady=4, cursor="hand2", takefocus=True,
-                bg=c["accent"] if selected else c["surface"], fg=c["on_accent"] if selected else c["text"],
+                box, text=text, font=font(10, selected), takefocus=True, bg=fill,
+                fg=c["on_accent"] if selected else c["text"],
             )
-            label.grid(row=0, column=i, padx=(1, 1 if i == len(options) - 1 else 0), pady=1)
+            label.pack(padx=10, pady=4)
             handler = lambda _e, v=val: command(v)
-            label.bind("<ButtonRelease-1>", handler)
+            for part in (box, label):
+                part.bind("<ButtonRelease-1>", handler)
+                if not selected:
+                    part.bind("<Enter>", lambda _e, b=box: b.paint(c["hover"]))
+                    part.bind("<Leave>", lambda _e, b=box: b.paint(c["surface"]))
             label.bind("<Return>", handler)
             label.bind("<space>", handler)
-            if not selected:
-                label.bind("<Enter>", lambda e: e.widget.configure(bg=c["hover"]))
-                label.bind("<Leave>", lambda e: e.widget.configure(bg=c["surface"]))
             tip(label, rest[0] if rest else None)
 
 

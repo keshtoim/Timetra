@@ -5,6 +5,7 @@ from pathlib import Path
 from timetra.db.connection import connect
 from timetra.ui.app import SCREENS, App
 from timetra.ui.dialogs import FormDialog
+from timetra.ui.widgets import RADIUS, Btn, _corner_image
 
 
 class UiCase(unittest.TestCase):
@@ -45,6 +46,35 @@ class ShellTest(UiCase):
         self.assertFalse(self.app.mutate("x", lambda: self.app.repo.save_room(None, "101", 30, 1)))
         self.assertEqual(len(self.app.repo.rooms()), 1)
         self.assertEqual(self.app.undo_stack, [])
+
+
+class RoundButtonTest(UiCase):
+    def test_button_draws_corners_and_clicks(self):
+        clicks = []
+        button = Btn(self.app.content, "Тест", "add", lambda: clicks.append(1))
+        button.pack()
+        self.app.update()
+        self.assertEqual(len(button.find_all()) >= 10, True)
+        self.assertGreater(button.winfo_height(), RADIUS * 2)
+        button.event_generate("<Return>")
+        button._click()
+        self.assertTrue(clicks)
+
+    def test_hover_recolors_and_disabled_does_nothing(self):
+        clicks = []
+        button = Btn(self.app.content, "Тест", None, lambda: clicks.append(1), disabled=True)
+        button.pack()
+        button.paint("#123456")
+        self.assertEqual(button.fill_color, "#123456")
+        button._click()
+        self.assertEqual(clicks, [])
+
+    def test_corner_blends_from_outside_to_fill(self):
+        button = Btn(self.app.content, "Тест")
+        image = _corner_image(button, False, False, "#ffffff", "#ffffff", "#000000")
+        self.assertEqual(image.get(0, 0), (0, 0, 0))
+        self.assertEqual(image.get(RADIUS - 1, RADIUS - 1), (255, 255, 255))
+        self.assertIs(image, _corner_image(button, False, False, "#ffffff", "#ffffff", "#000000"))
 
 
 class RefsTest(UiCase):

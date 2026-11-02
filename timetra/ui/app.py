@@ -17,7 +17,7 @@ from timetra.ui.schedule_screen import ScheduleScreen, ScheduleState
 from timetra.ui.settings_screen import SettingsScreen
 from timetra.ui.theme import colors as c
 from timetra.ui.theme import font
-from timetra.ui.widgets import ICONS, Scroll, badge, set_tips_enabled, tip
+from timetra.ui.widgets import ICONS, RoundFrame, Scroll, badge, set_tips_enabled, tip
 
 UNDO_LIMIT = 30
 TOAST_MS = 7000
@@ -105,7 +105,7 @@ class App(tk.Tk):
     def _nav_item(self, key, icon, text, hint, problems):
         current = key == self.screen
         bg = c["accent_soft"] if current else c["surface"]
-        row = tk.Frame(self.nav, bg=bg, cursor="hand2", takefocus=True)
+        row = RoundFrame(self.nav, bg, bg, cursor="hand2", takefocus=True)
         row.pack(fill="x", padx=8, pady=1)
         parts = [row]
         parts.append(tk.Label(row, text=ICONS[icon], font=theme.icon_font(12), fg=c["text"], bg=bg))
@@ -118,8 +118,8 @@ class App(tk.Tk):
         for part in parts:
             part.bind("<ButtonRelease-1>", lambda _e, k=key: self.go(k))
             if not current:
-                part.bind("<Enter>", lambda _e, ps=parts: [p.configure(bg=c["hover"]) for p in ps])
-                part.bind("<Leave>", lambda _e, ps=parts: [p.configure(bg=c["surface"]) for p in ps])
+                part.bind("<Enter>", lambda _e: row.paint(c["hover"], c["hover"]))
+                part.bind("<Leave>", lambda _e: row.paint(c["surface"], c["surface"]))
         row.bind("<Return>", lambda _e, k=key: self.go(k))
         row.bind("<space>", lambda _e, k=key: self.go(k))
         tip(row, hint)

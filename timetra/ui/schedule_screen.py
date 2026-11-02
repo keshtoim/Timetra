@@ -7,7 +7,7 @@ from timetra.ui.dialogs import Dialog, FormDialog, info_dialog
 from timetra.ui.schedule_grid import Column, ScheduleGrid
 from timetra.ui.theme import colors as c
 from timetra.ui.theme import font
-from timetra.ui.widgets import Btn, Scroll, Seg, Select, badge, label, note, tip
+from timetra.ui.widgets import Btn, RoundFrame, Scroll, Seg, Select, badge, label, note, tip
 
 ODD, EVEN = 1, 2
 MISSING_SHOWN = 5
@@ -199,13 +199,13 @@ class ScheduleScreen(tk.Frame):
         selected = self.state.pick == wl["id"]
         bg = c["accent_soft"] if selected else c["surface"]
         border = c["accent"] if selected else c["border"]
-        row = tk.Frame(parent, bg=bg, highlightthickness=1, highlightbackground=border, cursor="hand2")
+        row = RoundFrame(parent, bg, border, cursor="hand2")
         row.pack(fill="x", pady=(0, 4), padx=(0, 6))
-        title = tk.Label(row, text=f"{wl['subject_name']} × {self._left(wl)}", font=font(10, True), fg=c["text"], bg=bg, anchor="w", padx=7)
-        title.pack(fill="x", pady=(3, 0))
+        title = tk.Label(row, text=f"{wl['subject_name']} × {self._left(wl)}", font=font(10, True), fg=c["text"], bg=bg, anchor="w")
+        title.pack(fill="x", padx=8, pady=(4, 0))
         group = f", гр. {wl['subgroup']}" if wl["subgroup"] else ""
-        sub = tk.Label(row, text=f"{wl['class_name']}{group} · {wl['teacher_short']}", font=font(9), fg=c["muted"], bg=bg, anchor="w", padx=7)
-        sub.pack(fill="x", pady=(0, 3))
+        sub = tk.Label(row, text=f"{wl['class_name']}{group} · {wl['teacher_short']}", font=font(9), fg=c["muted"], bg=bg, anchor="w")
+        sub.pack(fill="x", padx=8, pady=(0, 4))
         for part in (row, title, sub):
             part.bind("<ButtonPress-1>", lambda e: self._panel_press(e))
             part.bind("<B1-Motion>", lambda e, w=wl["id"]: self._panel_drag(e, w))
