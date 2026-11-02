@@ -198,7 +198,6 @@ def _press_save_in_native_dialog(title, target, errors):
     else:
         errors.append("окно сохранения не появилось")
         return
-    time.sleep(0.5)
     edits = []
     callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
@@ -209,10 +208,14 @@ def _press_save_in_native_dialog(title, target, errors):
             edits.append(hwnd)
         return True
 
-    user32.EnumChildWindows(window, callback_type(collect), 0)
+    # заголовок появляется раньше полей, под нагрузкой они создаются заметно позже
+    while not edits and time.monotonic() < deadline:
+        time.sleep(0.1)
+        user32.EnumChildWindows(window, callback_type(collect), 0)
     if not edits:
         errors.append("нет поля имени файла")
         return
+    time.sleep(0.3)
     user32.SendMessageW(edits[0], WM_SETTEXT, 0, str(target))
     user32.SendMessageW(user32.GetDlgItem(window, IDOK), BM_CLICK, 0, None)
 
