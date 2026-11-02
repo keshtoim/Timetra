@@ -8,6 +8,7 @@ class Settings:
     theme: str = "system"  # light, dark или system
     big_text: bool = False
     tips: bool = True
+    nav_collapsed: bool = False
 
 
 def load_settings(path: Path) -> Settings:

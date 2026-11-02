@@ -1,9 +1,11 @@
 import tempfile
+import tkinter as tk
 import unittest
 from pathlib import Path
 
 from timetra.db.connection import connect
-from timetra.ui.app import SCREENS, App
+from timetra.settings import load_settings
+from timetra.ui.app import NAV_COLLAPSED_WIDTH, NAV_WIDTH, SCREENS, App
 from timetra.ui.dialogs import FormDialog
 from timetra.ui.widgets import RADIUS, Btn, _corner_image
 
@@ -46,6 +48,40 @@ class ShellTest(UiCase):
         self.assertFalse(self.app.mutate("x", lambda: self.app.repo.save_room(None, "101", 30, 1)))
         self.assertEqual(len(self.app.repo.rooms()), 1)
         self.assertEqual(self.app.undo_stack, [])
+
+
+class NavTest(UiCase):
+    def texts(self):
+        return [w.cget("text") for row in self.app.nav.winfo_children() for w in [row, *row.winfo_children()] if isinstance(w, tk.Label)]
+
+    def test_collapse_hides_captions_and_keeps_navigation(self):
+        self.assertIn("Нагрузка", self.texts())
+        self.app.toggle_nav()
+        self.app.update()
+        self.assertNotIn("Нагрузка", self.texts())
+        self.assertEqual(self.app.nav.winfo_width(), NAV_COLLAPSED_WIDTH)
+        self.app.go("load")
+        self.app.update()
+        self.assertEqual(self.app.screen, "load")
+        self.assertNotIn("Нагрузка", self.texts())
+
+    def test_expand_restores_captions(self):
+        self.app.toggle_nav()
+        self.app.toggle_nav()
+        self.app.update()
+        self.assertIn("Нагрузка", self.texts())
+        self.assertEqual(self.app.nav.winfo_width(), NAV_WIDTH)
+
+    def test_state_remembered_after_restart(self):
+        self.app.toggle_nav()
+        self.assertTrue(load_settings(self.tmp / "settings.json").nav_collapsed)
+
+    def test_survives_theme_change(self):
+        self.app.toggle_nav()
+        self.app.settings.theme = "dark"
+        self.app.settings_changed()
+        self.app.update()
+        self.assertEqual(self.app.nav.winfo_width(), NAV_COLLAPSED_WIDTH)
 
 
 class RoundButtonTest(UiCase):

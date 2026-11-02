@@ -21,6 +21,8 @@ from timetra.ui.widgets import ICONS, RoundFrame, Scroll, badge, set_tips_enable
 
 UNDO_LIMIT = 30
 TOAST_MS = 7000
+NAV_WIDTH = 200
+NAV_COLLAPSED_WIDTH = 58
 
 SCREENS = [
     ("schedule", "calendar", "Расписание", "Главный экран: сетка уроков по дням и классам", ScheduleScreen),
@@ -84,7 +86,7 @@ class App(tk.Tk):
         for child in self.winfo_children():
             child.destroy()
         theme.apply_theme(self, self.settings.theme, self.settings.big_text)
-        self.nav = tk.Frame(self, bg=c["surface"], width=200, highlightthickness=1, highlightbackground=c["border"])
+        self.nav = tk.Frame(self, bg=c["surface"], width=self._nav_width(), highlightthickness=1, highlightbackground=c["border"])
         self.nav.pack(side="left", fill="y")
         self.nav.pack_propagate(False)
         self.content = tk.Frame(self, bg=c["bg"], padx=16, pady=14)
@@ -95,34 +97,58 @@ class App(tk.Tk):
     def _build_nav(self):
         for child in self.nav.winfo_children():
             child.destroy()
+        collapsed = self.settings.nav_collapsed
         tk.Label(
-            self.nav, text="Timetra", font=font(15, True), fg=c["accent"], bg=c["surface"], anchor="w", padx=14, pady=10,
+            self.nav, text="T" if collapsed else "Timetra", font=font(15, True), fg=c["accent"], bg=c["surface"],
+            anchor="center" if collapsed else "w", padx=0 if collapsed else 14, pady=10,
         ).pack(fill="x")
+        if collapsed:
+            self._nav_row("expand", "", "Развернуть меню: показать подписи разделов", False, self.toggle_nav, side="bottom")
+        else:
+            self._nav_row("collapse", "Свернуть меню", "Оставить только значки, чтобы расписанию было больше места", False, self.toggle_nav, side="bottom")
         problems = find_problems(self.repo, self.version_id)
         for key, icon, text, hint, _factory in SCREENS:
-            self._nav_item(key, icon, text, hint, problems if key == "check" else None)
+            found = problems if key == "check" else None
+            # в свёрнутом меню подписи нет, поэтому подсказка должна назвать раздел
+            full_hint = f"{text}. {hint}" if collapsed else hint
+            self._nav_row(icon, "" if collapsed else text, full_hint, key == self.screen, lambda k=key: self.go(k), found)
 
-    def _nav_item(self, key, icon, text, hint, problems):
-        current = key == self.screen
+    def _nav_row(self, icon, text, hint, current, command, problems=None, side="top"):
         bg = c["accent_soft"] if current else c["surface"]
         row = RoundFrame(self.nav, bg, bg, cursor="hand2", takefocus=True)
-        row.pack(fill="x", padx=8, pady=1)
-        parts = [row]
-        parts.append(tk.Label(row, text=ICONS[icon], font=theme.icon_font(12), fg=c["text"], bg=bg))
-        parts[-1].pack(side="left", padx=(8, 8), pady=7)
-        parts.append(tk.Label(row, text=text, font=font(10, current), fg=c["text"], bg=bg, anchor="w"))
-        parts[-1].pack(side="left")
-        if problems:
-            conflicts = sum(p.severity == CONFLICT for p in problems)
-            badge(row, str(conflicts or len(problems)), "conflict" if conflicts else "warning").pack(side="right", padx=6)
+        row.pack(side=side, fill="x", padx=8, pady=(1, 8) if side == "bottom" else 1)
+        conflicts = sum(p.severity == CONFLICT for p in problems or ())
+        icon_color = c["text"]
+        if problems and not text:
+            icon_color = c["conflict"] if conflicts else c["warn"]
+            hint = f"{hint}. Найдено: {len(problems)}"
+        glyph = tk.Label(row, text=ICONS[icon], font=theme.icon_font(12), fg=icon_color, bg=bg)
+        parts = [row, glyph]
+        if text:
+            glyph.pack(side="left", padx=(8, 8), pady=7)
+            parts.append(tk.Label(row, text=text, font=font(10, current), fg=c["text"], bg=bg, anchor="w"))
+            parts[-1].pack(side="left")
+            if problems:
+                badge(row, str(conflicts or len(problems)), "conflict" if conflicts else "warning").pack(side="right", padx=6)
+        else:
+            glyph.pack(padx=8, pady=7)
         for part in parts:
-            part.bind("<ButtonRelease-1>", lambda _e, k=key: self.go(k))
+            part.bind("<ButtonRelease-1>", lambda _e: command())
             if not current:
                 part.bind("<Enter>", lambda _e: row.paint(c["hover"], c["hover"]))
                 part.bind("<Leave>", lambda _e: row.paint(c["surface"], c["surface"]))
-        row.bind("<Return>", lambda _e, k=key: self.go(k))
-        row.bind("<space>", lambda _e, k=key: self.go(k))
-        tip(row, hint)
+            tip(part, hint)
+        row.bind("<Return>", lambda _e: command())
+        row.bind("<space>", lambda _e: command())
+
+    def _nav_width(self):
+        return NAV_COLLAPSED_WIDTH if self.settings.nav_collapsed else NAV_WIDTH
+
+    def toggle_nav(self):
+        self.settings.nav_collapsed = not self.settings.nav_collapsed
+        save_settings(self.settings_path, self.settings)
+        self.nav.configure(width=self._nav_width())
+        self._build_nav()
 
     def go(self, key):
         self.screen = key
