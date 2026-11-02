@@ -326,7 +326,13 @@ class Repo:
                 COALESCE(x.classroom_id, sc.classroom_id) AS eff_room_id,
                 {TEACHER_SHORT.replace("t.", "nt.")} AS new_teacher,
                 ns.name AS new_subject, nr.number AS new_room,
-                x.teacher_id AS sub_teacher_id, x.subject_id AS sub_subject_id, x.classroom_id AS sub_room_id
+                x.teacher_id AS sub_teacher_id, x.subject_id AS sub_subject_id, x.classroom_id AS sub_room_id,
+                NULL AS extra_id, c.letter, c.shift_id, sc.week_type_id, x.lesson_slot_id AS sub_slot_id,
+                COALESCE(x.lesson_slot_id, sc.lesson_slot_id) AS eff_slot_id,
+                COALESCE(ms.number, ls.number) AS eff_number, ms.number AS moved_number,
+                COALESCE(ns.short_name, ns.name, s.short_name, s.name) AS eff_subject_short,
+                COALESCE({TEACHER_SHORT.replace("t.", "nt.")}, {TEACHER_SHORT}) AS eff_teacher,
+                COALESCE(nr.number, r.number) AS eff_room
             FROM schedule sc
             JOIN workload w ON w.id = sc.workload_id
             JOIN classes c ON c.id = w.class_id
@@ -338,19 +344,63 @@ class Repo:
             LEFT JOIN teachers nt ON nt.id = x.teacher_id
             LEFT JOIN subjects ns ON ns.id = x.subject_id
             LEFT JOIN classrooms nr ON nr.id = x.classroom_id
-            WHERE sc.version_id = ? AND sc.week_type_id = ? AND sc.weekday_id = ?
-            ORDER BY c.grade, c.letter, ls.number, w.subgroup""",
+            LEFT JOIN lesson_slots ms ON ms.id = x.lesson_slot_id
+            WHERE sc.version_id = ? AND sc.week_type_id = ? AND sc.weekday_id = ?""",
             lesson_date, version_id, week_id, day_id,
         )
 
-    def save_substitution(self, lesson_id, lesson_date, teacher_id, subject_id, room_id, cancelled, note) -> None:
+    def extras_on_date(self, version_id, lesson_date):
+        """Дополнительные уроки даты с теми же полями, что у lessons_on_date."""
+        return self._all(
+            f"""SELECT NULL AS lesson_id, NULL AS workload_id, e.lesson_slot_id, ls.number AS lesson_number,
+                ls.starts_at, ls.ends_at, e.class_id, e.subgroup, c.grade, c.grade || c.letter AS class_name,
+                e.teacher_id AS base_teacher_id, {TEACHER_SHORT} AS base_teacher,
+                e.subject_id AS base_subject_id, s.name AS base_subject,
+                e.classroom_id AS base_room_id, r.number AS base_room,
+                e.id AS substitution_id, 0 AS is_cancelled, e.note,
+                e.teacher_id AS eff_teacher_id, e.subject_id AS eff_subject_id, e.classroom_id AS eff_room_id,
+                NULL AS new_teacher, NULL AS new_subject, NULL AS new_room,
+                NULL AS sub_teacher_id, NULL AS sub_subject_id, NULL AS sub_room_id,
+                e.id AS extra_id, c.letter, c.shift_id, e.week_type_id, NULL AS sub_slot_id,
+                e.lesson_slot_id AS eff_slot_id, ls.number AS eff_number, NULL AS moved_number,
+                COALESCE(s.short_name, s.name) AS eff_subject_short, {TEACHER_SHORT} AS eff_teacher,
+                r.number AS eff_room
+            FROM extra_lessons e
+            JOIN classes c ON c.id = e.class_id
+            JOIN subjects s ON s.id = e.subject_id
+            JOIN teachers t ON t.id = e.teacher_id
+            JOIN lesson_slots ls ON ls.id = e.lesson_slot_id
+            LEFT JOIN classrooms r ON r.id = e.classroom_id
+            WHERE e.version_id = ? AND e.lesson_date = ?""",
+            version_id, lesson_date,
+        )
+
+    def save_extra(self, extra_id, version_id, lesson_date, week_id, slot_id, class_id, subgroup, subject_id, teacher_id, room_id, note) -> None:
+        note = _blank_to_none(note)
+        if extra_id:
+            self.conn.execute(
+                """UPDATE extra_lessons SET lesson_slot_id = ?, class_id = ?, subgroup = ?, subject_id = ?, teacher_id = ?,
+                classroom_id = ?, note = ? WHERE id = ?""",
+                (slot_id, class_id, subgroup, subject_id, teacher_id, room_id, note, extra_id),
+            )
+        else:
+            self.conn.execute(
+                """INSERT INTO extra_lessons (version_id, lesson_date, week_type_id, lesson_slot_id, class_id, subgroup,
+                subject_id, teacher_id, classroom_id, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (version_id, lesson_date, week_id, slot_id, class_id, subgroup, subject_id, teacher_id, room_id, note),
+            )
+
+    def delete_extra(self, extra_id) -> None:
+        self.conn.execute("DELETE FROM extra_lessons WHERE id = ?", (extra_id,))
+
+    def save_substitution(self, lesson_id, lesson_date, teacher_id, subject_id, room_id, cancelled, note, slot_id=None) -> None:
         self.conn.execute(
-            """INSERT INTO substitutions (schedule_id, lesson_date, teacher_id, subject_id, classroom_id, is_cancelled, note)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """INSERT INTO substitutions (schedule_id, lesson_date, teacher_id, subject_id, classroom_id, is_cancelled, note, lesson_slot_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (schedule_id, lesson_date) DO UPDATE SET teacher_id = excluded.teacher_id,
                 subject_id = excluded.subject_id, classroom_id = excluded.classroom_id,
-                is_cancelled = excluded.is_cancelled, note = excluded.note""",
-            (lesson_id, lesson_date, teacher_id, subject_id, room_id, int(cancelled), _blank_to_none(note)),
+                is_cancelled = excluded.is_cancelled, note = excluded.note, lesson_slot_id = excluded.lesson_slot_id""",
+            (lesson_id, lesson_date, teacher_id, subject_id, room_id, int(cancelled), _blank_to_none(note), slot_id),
         )
 
     def delete_substitution(self, lesson_id, lesson_date) -> None:

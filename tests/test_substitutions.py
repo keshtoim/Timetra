@@ -7,6 +7,8 @@ from pathlib import Path
 from tests.test_repo import RepoCase
 from timetra.db.connection import SCHEMA_PATH, SUBSTITUTIONS_PATH, connect
 from timetra.services.substitutions import (
+    change_flag,
+    check_extra,
     check_substitution,
     day_lessons,
     describe_change,
@@ -258,6 +260,65 @@ class LogicTest(SubstitutionCase):
         with self.conn:
             t3 = self.repo.save_teacher(None, "Сидоров", "Иван", "", [self.music])
         self.assertIn("не отмечен", self.check(self.lesson, t3, self.subject, None).warnings[0])
+
+    def add_extra(self, slot, room=None, teacher=None):
+        with self.conn:
+            self.repo.save_extra(None, self.ver, MONDAY, 1, slot, self.cls2, 0, self.music, teacher or self.t2, room, "кружок")
+
+    def test_move_applies_to_day_only(self):
+        slot3 = self.repo.slots(1)[2]["id"]
+        with self.conn:
+            self.repo.save_substitution(self.lesson, MONDAY, None, None, None, False, "", slot3)
+        row = self.row(self.lesson)
+        self.assertEqual((row["eff_slot_id"], row["eff_number"], row["lesson_number"]), (slot3, 3, 1))
+        self.assertEqual(describe_change(row), "Перенос на 3 урок")
+        self.assertEqual(change_flag(row), "Перенос")
+        self.assertEqual(self.repo.lesson(self.lesson)["lesson_slot_id"], self.slot)
+        self.assertEqual(self.rows()[0]["class_name"], "5А")
+
+    def test_rows_sorted_by_actual_time(self):
+        slot3 = self.repo.slots(1)[2]["id"]
+        self.add_extra(self.repo.slots(1)[1]["id"])
+        with self.conn:
+            self.repo.save_substitution(self.lesson2, MONDAY, None, None, None, False, "", slot3)
+        numbers = [r["eff_number"] for r in self.rows() if r["class_id"] == self.cls2]
+        self.assertEqual(numbers, [2, 3])
+
+    def test_extra_listed_on_its_date_only(self):
+        self.add_extra(self.repo.slots(1)[2]["id"])
+        extra = next(r for r in self.rows() if r["extra_id"])
+        self.assertEqual(extra["base_subject"], "Музыка")
+        self.assertEqual(describe_change(extra), "Дополнительный урок")
+        self.assertEqual(export_rows([extra])[0][-1], "кружок")
+        self.assertFalse(any(r["extra_id"] for r in self.rows(datetime.date.fromisoformat("2026-11-16"))))
+
+    def test_check_extra_room_and_class_and_teacher(self):
+        result = check_extra(self.repo, self.ver, self.date, self.offset, self.cls2, 0, self.slot, self.t2, self.music, self.r1)
+        self.assertIn("занят", result.room_busy)
+        self.assertTrue(any("уже есть урок" in w for w in result.warnings))
+        self.assertTrue(any("ведёт урок" in w for w in result.warnings))
+
+    def test_check_move_uses_target_slot(self):
+        slot3 = self.repo.slots(1)[2]["id"]
+        self.add_extra(slot3, self.r1, self.teacher)
+        result = check_substitution(self.repo, self.ver, self.date, self.offset, self.row(self.lesson), self.teacher, self.subject, self.r1, slot3)
+        self.assertIn("занят", result.room_busy)
+        self.assertIsNone(self.check(self.lesson, self.teacher, self.subject, self.r1).room_busy)
+
+    def test_extra_does_not_clash_with_itself(self):
+        slot3 = self.repo.slots(1)[2]["id"]
+        self.add_extra(slot3, self.r1)
+        extra = next(r for r in self.rows() if r["extra_id"])
+        result = check_extra(self.repo, self.ver, self.date, self.offset, self.cls2, 0, slot3, self.t2, self.music, self.r1, extra)
+        self.assertIsNone(result.room_busy)
+        self.assertFalse([w for w in result.warnings if "ведёт урок" in w or "уже есть урок" in w])
+
+    def test_free_teachers_count_moves(self):
+        slot3 = self.repo.slots(1)[2]["id"]
+        with self.conn:
+            self.repo.save_substitution(self.lesson2, MONDAY, None, None, None, False, "", slot3)
+        self.assertIn(self.t2, free_teacher_ids(self.repo, self.ver, self.date, self.offset, self.row(self.lesson)))
+        self.assertNotIn(self.t2, free_teacher_ids(self.repo, self.ver, self.date, self.offset, None, slot3))
 
     def test_export_only_changes(self):
         self.save(self.lesson, teacher=self.t2, note="болеет")
