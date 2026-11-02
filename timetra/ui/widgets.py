@@ -10,6 +10,7 @@ ICONS = {
     "settings": "", "help": "", "add": "", "edit": "", "delete": "",
     "undo": "", "check": "", "close": "", "copy": "", "star": "",
     "upload": "", "download": "", "wand": "", "save": "",
+    "day": "", "people": "", "home": "",
 }
 
 tips_enabled = True
@@ -207,6 +208,35 @@ class Seg(tk.Frame):
             label.bind("<Return>", handler)
             label.bind("<space>", handler)
             tip(label, rest[0] if rest else None)
+
+
+class ViewTabs(tk.Frame):
+    """Крупные вкладки с пояснением: выбор вида нельзя пропустить, как маленькую кнопку в ряду."""
+
+    def __init__(self, parent, options, value, command):
+        super().__init__(parent, bg=parent.cget("bg"))
+        for i, (val, icon, title, hint) in enumerate(options):
+            selected = val == value
+            fill = c["accent"] if selected else c["surface"]
+            fg = c["on_accent"] if selected else c["text"]
+            sub_fg = c["on_accent"] if selected else c["muted"]
+            box = RoundFrame(self, fill, c["accent"] if selected else c["border"], cursor="hand2")
+            box.grid(row=0, column=i, sticky="nsew", padx=(0, 0 if i == len(options) - 1 else SEG_GAP * 2))
+            self.columnconfigure(i, weight=1, uniform="tabs")
+            glyph = tk.Label(box, text=ICONS[icon], font=icon_font(15), fg=fg, bg=fill)
+            glyph.grid(row=0, column=0, rowspan=2, padx=(11, 8), pady=7)
+            name = tk.Label(box, text=title, font=font(11, True), fg=fg, bg=fill, anchor="w", takefocus=True)
+            name.grid(row=0, column=1, sticky="sw", padx=(0, 8), pady=(7, 0))
+            sub = tk.Label(box, text=hint, font=font(8), fg=sub_fg, bg=fill, anchor="w")
+            sub.grid(row=1, column=1, sticky="nw", padx=(0, 8), pady=(0, 7))
+            handler = lambda _e, v=val: command(v)
+            for part in (box, glyph, name, sub):
+                part.bind("<ButtonRelease-1>", handler)
+                if not selected:
+                    part.bind("<Enter>", lambda _e, b=box: b.paint(c["hover"]))
+                    part.bind("<Leave>", lambda _e, b=box: b.paint(c["surface"]))
+            name.bind("<Return>", handler)
+            name.bind("<space>", handler)
 
 
 class Select(ttk.Combobox):

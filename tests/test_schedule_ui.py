@@ -1,3 +1,4 @@
+import tkinter as tk
 import unittest
 
 from tests.test_ui import UiCase
@@ -178,6 +179,27 @@ class PickAndGridTest(ScheduleCase):
         self.dialogs()[0].destroy()
         self.app.undo()
         self.assertEqual(len(self.lessons()), 1)
+
+
+class ViewTabsTest(ScheduleCase):
+    def labels(self, widget):
+        for child in widget.winfo_children():
+            if isinstance(child, tk.Label):
+                yield child
+            yield from self.labels(child)
+
+    def test_opens_on_whole_school(self):
+        self.assertEqual(self.app.schedule_state.view, "all")
+        self.assertTrue(self.screen.grid_view.split)
+
+    def test_click_on_tab_caption_switches_view(self):
+        hint = next(x for x in self.labels(self.app.content) if x.cget("text") == "Все классы за день")
+        hint.event_generate("<ButtonRelease-1>")
+        self.app.update()
+        self.assertEqual(self.app.schedule_state.view, "classes")
+        self.assertFalse(self.app.current_screen.grid_view.split)
+        day = [x.cget("text") for x in self.labels(self.app.content)]
+        self.assertIn("Понедельник", day)
 
 
 class WholeScheduleTest(ScheduleCase):

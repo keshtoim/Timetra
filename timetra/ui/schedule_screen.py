@@ -7,17 +7,24 @@ from timetra.ui.dialogs import Dialog, FormDialog, info_dialog
 from timetra.ui.schedule_grid import Column, ScheduleGrid
 from timetra.ui.theme import colors as c
 from timetra.ui.theme import font
-from timetra.ui.widgets import Btn, RoundFrame, Scroll, Seg, Select, badge, label, note, tip
+from timetra.ui.widgets import Btn, RoundFrame, Scroll, Seg, Select, ViewTabs, badge, label, note, tip
 
 ODD, EVEN = 1, 2
 MISSING_SHOWN = 5
+VIEWS = [
+    ("all", "calendar", "Вся школа", "Все классы на всю неделю"),
+    ("classes", "day", "Один день", "Все классы за день"),
+    ("week", "book", "Один класс", "Вся неделя класса"),
+    ("teachers", "people", "Учителя", "Уроки по учителям"),
+    ("rooms", "home", "Кабинеты", "Занятость кабинетов"),
+]
 
 
 @dataclass
 class ScheduleState:
     week: int = ODD
     day: int = 1
-    view: str = "classes"
+    view: str = "all"
     class_id: int | None = None
     shift: int = 1
     pick: int | None = None
@@ -80,40 +87,32 @@ class ScheduleScreen(tk.Frame):
         if not next(v for v in versions if v["id"] == self.version)["is_active"]:
             Btn(first, "Сделать действующим", "star", self._activate, tooltip="Этот вариант будет считаться настоящим расписанием школы").pack(side="left")
 
-        second = self._tool_row(box)
-        if s.view != "all":
-            label(second, "Неделя", 9, color="muted", bg="surface").pack(side="left", padx=(0, 6))
-            Seg(second, [(ODD, "Нечётная", "Показать нечётную неделю"), (EVEN, "Чётная", "Показать чётную неделю")], s.week, lambda v: self._set("week", v)).pack(side="left", padx=(0, 14))
-        label(second, "Показать", 9, color="muted", bg="surface").pack(side="left", padx=(0, 6))
-        Seg(
-            second,
-            [
-                ("all", "Всё расписание", "Все классы за всю неделю, чётная и нечётная недели в одной клетке"),
-                ("classes", "Все классы", "Все классы за один день"), ("week", "Один класс", "Вся неделя одного класса"),
-                ("teachers", "Учителя", "Расписание по учителям"), ("rooms", "Кабинеты", "Занятость кабинетов"),
-            ],
-            s.view, lambda v: self._set("view", v),
-        ).pack(side="left")
+        ViewTabs(box, VIEWS, s.view, lambda v: self._set("view", v)).pack(fill="x", pady=(6, 4))
+
+        filters = self._tool_row(box)
+        if s.view == "all":
+            label(filters, "Чётная и нечётная недели показаны в одной клетке.", 9, color="muted", bg="surface").pack(side="left", padx=(0, 14))
+        else:
+            label(filters, "Неделя", 9, color="muted", bg="surface").pack(side="left", padx=(0, 6))
+            Seg(filters, [(ODD, "Нечётная", "Показать нечётную неделю"), (EVEN, "Чётная", "Показать чётную неделю")], s.week, lambda v: self._set("week", v)).pack(side="left", padx=(0, 14))
         classes = self.repo.classes()
         if s.view == "week" and classes:
             if s.class_id not in [x["id"] for x in classes]:
                 s.class_id = classes[0]["id"]
-            Select(second, [(x["id"], x["name"]) for x in classes], s.class_id, lambda v: self._set("class_id", v), width=8).pack(side="left", padx=8)
-
+            label(filters, "Класс", 9, color="muted", bg="surface").pack(side="left", padx=(0, 6))
+            Select(filters, [(x["id"], x["name"]) for x in classes], s.class_id, lambda v: self._set("class_id", v), width=8).pack(side="left")
         used = sorted({x["shift_id"] for x in classes})
-        if s.view == "classes" or s.view == "teachers" or s.view == "rooms" or (s.view == "all" and len(used) > 1):
-            third = self._tool_row(box)
-            if len(used) > 1 and s.view != "week":
-                if s.shift not in used:
-                    s.shift = used[0]
-                names = {x["id"]: x["name"] for x in self.repo.shifts()}
-                label(third, "Смена", 9, color="muted", bg="surface").pack(side="left", padx=(0, 6))
-                Seg(third, [(i, names[i]) for i in used], s.shift, lambda v: self._set("shift", v)).pack(side="left", padx=(0, 14))
-            if s.view != "all":
-                s.day = min(s.day, self._last_day())
-                label(third, "День", 9, color="muted", bg="surface").pack(side="left", padx=(0, 6))
-                days = [(d["id"], d["name"]) for d in self.repo.weekdays() if d["id"] <= self._last_day()]
-                Seg(third, days, s.day, lambda v: self._set("day", v)).pack(side="left")
+        if len(used) > 1 and s.view != "week":
+            if s.shift not in used:
+                s.shift = used[0]
+            names = {x["id"]: x["name"] for x in self.repo.shifts()}
+            label(filters, "Смена", 9, color="muted", bg="surface").pack(side="left", padx=(0, 6))
+            Seg(filters, [(i, names[i]) for i in used], s.shift, lambda v: self._set("shift", v)).pack(side="left", padx=(0, 14))
+        if s.view in ("classes", "teachers", "rooms"):
+            s.day = min(s.day, self._last_day())
+            label(filters, "День", 9, color="muted", bg="surface").pack(side="left", padx=(0, 6))
+            days = [(d["id"], d["name"]) for d in self.repo.weekdays() if d["id"] <= self._last_day()]
+            Seg(filters, days, s.day, lambda v: self._set("day", v)).pack(side="left")
 
     def _last_day(self):
         return 6 if any(x["study_days"] == 6 for x in self.repo.classes()) else 5
