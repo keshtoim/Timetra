@@ -184,7 +184,8 @@ class ScheduleGrid(tk.Frame):
             lines.append(f"каб. {lesson['room_number']}" if lesson["room_number"] else "без кабинета")
         level = self._level(lesson, twin)
         if level:
-            lines.append("Накладка" if level[0] == CONFLICT else "Проверьте")
+            # третий элемент — своя пометка, например «Замена» на вкладке «На дату»
+            lines.append(level[2] if len(level) > 2 else "Накладка" if level[0] == CONFLICT else "Проверьте")
         return lines
 
     def _card_height(self, lesson, twin=None, tag=None):

@@ -125,6 +125,87 @@ class MoveAndExtraTest(SubstitutionsScreenCase):
         dialog.destroy()
 
 
+class DateGridTest(SubstitutionsScreenCase):
+    def open_grid(self):
+        self.app.schedule_state.view = "date"
+        self.app.go("schedule")
+        self.app.update()
+        return self.app.current_screen
+
+    def card(self, screen, workload):
+        return next(x[4] for x in screen.grid_view.cards if x[4]["row"]["workload_id"] == workload)
+
+    def lesson_id(self, workload):
+        return self.row(workload)["lesson_id"]
+
+    def test_shows_day_without_changes_and_no_panel(self):
+        screen = self.open_grid()
+        self.assertEqual(len(screen.grid_view.cards), 2)
+        self.assertEqual(screen.grid_view.levels, {})
+
+    def test_changes_marked_and_applied(self):
+        with self.conn:
+            self.repo.save_substitution(self.lesson_id(self.w1), MONDAY.isoformat(), self.t2, None, None, False, "", self.slots[3]["id"])
+            self.repo.save_substitution(self.lesson_id(self.w3), MONDAY.isoformat(), None, None, None, True, "")
+            self.repo.save_extra(None, self.ver, MONDAY.isoformat(), 1, self.slots[4]["id"], self.c2, 0, self.s2, self.t2, None, "")
+        grid = self.open_grid().grid_view
+        moved = next(x[4] for x in grid.cards if x[4]["row"]["workload_id"] == self.w1)
+        self.assertEqual(moved["lesson_slot_id"], self.slots[3]["id"])
+        self.assertEqual(moved["teacher_short"], "Петрова А.")
+        flags = sorted(v[2] for v in grid.levels.values())
+        self.assertEqual(flags, ["Доп. урок", "Отмена", "Перенос"])
+        self.assertIn("Перенос", grid._card_lines(moved))
+
+    def test_drag_moves_only_this_day(self):
+        screen = self.open_grid()
+        target = screen._columns()[0][0]
+        screen.move_lesson(self.card(screen, self.w1), target, self.slots[2]["id"])
+        self.app.update()
+        self.assertEqual(self.saved()[0]["lesson_slot_id"], self.slots[2]["id"])
+        self.assertTrue(all(r["lesson_slot_id"] == self.slot for r in self.repo.lessons(self.ver)))
+
+    def test_drag_back_removes_substitution_and_keeps_other_changes(self):
+        with self.conn:
+            self.repo.save_substitution(self.lesson_id(self.w1), MONDAY.isoformat(), None, None, None, False, "", self.slots[2]["id"])
+        screen = self.open_grid()
+        target = screen._columns()[0][0]
+        screen.move_lesson(self.card(screen, self.w1), target, self.slot)
+        self.assertEqual(self.saved(), [])
+
+    def test_drag_into_busy_room_refused(self):
+        with self.conn:
+            self.repo.add_lesson(self.ver, self.w2, 1, 1, self.slots[2]["id"], self.r1)
+        screen = self.open_grid()
+        target = screen._columns()[0][0]
+        screen.move_lesson(self.card(screen, self.w1), target, self.slots[2]["id"])
+        self.app.update()
+        self.assertEqual(self.saved(), [])
+        self.dialogs()[0].destroy()
+
+    def test_drag_to_other_class_refused(self):
+        screen = self.open_grid()
+        target = screen._columns()[0][1]
+        screen.move_lesson(self.card(screen, self.w1), target, self.slots[2]["id"])
+        self.assertEqual(self.saved(), [])
+
+    def test_click_lesson_and_empty_cell_open_dialogs(self):
+        screen = self.open_grid()
+        screen.lesson_clicked(self.card(screen, self.w1), None)
+        self.app.update()
+        self.assertIsInstance(self.dialogs()[0], SubstitutionDialog)
+        self.dialogs()[0].destroy()
+        screen.cell_clicked(screen._columns()[0][0], self.slots[5]["id"])
+        self.app.update()
+        dialog = self.dialogs()[0]
+        self.assertIsInstance(dialog, ExtraLessonDialog)
+        self.assertEqual(dialog.slot.value(), self.slots[5]["id"])
+        dialog.destroy()
+
+    def test_sunday_explained(self):
+        self.app.substitutions_state.date = MONDAY + datetime.timedelta(days=6)
+        self.assertIsNone(self.open_grid().grid_view)
+
+
 class ScreenTest(SubstitutionsScreenCase):
     def test_lists_lessons_of_date(self):
         self.assertEqual({r["workload_id"] for r in self.sub_screen.rows}, {self.w1, self.w3})

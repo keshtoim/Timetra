@@ -2,9 +2,11 @@ import tkinter as tk
 from dataclasses import dataclass, field
 
 from timetra.services.autoplace import PEAK_EVEN, PEAK_TUE_WED, PEAK_WED_THU, auto_place, pick_room
-from timetra.services.checks import CONFLICT, check_placement, day_score, find_problems
+from timetra.services.checks import CONFLICT, WARNING, check_placement, day_score, find_problems
+from timetra.services.substitutions import SUNDAY, change_flag, check_extra, check_substitution, day_lessons, describe_change
 from timetra.ui.dialogs import Dialog, FormDialog, info_dialog
 from timetra.ui.schedule_grid import Column, ScheduleGrid
+from timetra.ui.substitutions_screen import DateBar, ExtraLessonDialog, open_day_dialog
 from timetra.ui.theme import colors as c
 from timetra.ui.theme import font
 from timetra.ui.widgets import Btn, RoundFrame, Scroll, Seg, Select, ViewTabs, badge, label, note, tip
@@ -12,11 +14,12 @@ from timetra.ui.widgets import Btn, RoundFrame, Scroll, Seg, Select, ViewTabs, b
 ODD, EVEN = 1, 2
 MISSING_SHOWN = 5
 VIEWS = [
-    ("all", "calendar", "Вся школа", "Все классы на всю неделю"),
+    ("all", "calendar", "Вся школа", "Вся неделя"),
     ("classes", "day", "Один день", "Все классы за день"),
     ("week", "book", "Один класс", "Вся неделя класса"),
     ("teachers", "people", "Учителя", "Уроки по учителям"),
     ("rooms", "home", "Кабинеты", "Занятость кабинетов"),
+    ("date", "replace", "На дату", "С заменами на день"),
 ]
 
 
@@ -92,6 +95,8 @@ class ScheduleScreen(tk.Frame):
         filters = self._tool_row(box)
         if s.view == "all":
             label(filters, "Чётная и нечётная недели показаны в одной клетке.", 9, color="muted", bg="surface").pack(side="left", padx=(0, 14))
+        elif s.view == "date":
+            DateBar(filters, self.app).pack(side="left", padx=(0, 14))
         else:
             label(filters, "Неделя", 9, color="muted", bg="surface").pack(side="left", padx=(0, 6))
             Seg(filters, [(ODD, "Нечётная", "Показать нечётную неделю"), (EVEN, "Чётная", "Показать чётную неделю")], s.week, lambda v: self._set("week", v)).pack(side="left", padx=(0, 14))
@@ -133,6 +138,9 @@ class ScheduleScreen(tk.Frame):
     def _build_work(self):
         work = tk.Frame(self, bg=c["bg"])
         work.pack(fill="both", expand=True)
+        if self.state.view == "date":
+            self._build_date_grid(work)
+            return
         self._build_panel(work)
         columns, slots = self._columns()
         if not columns or not slots:
@@ -154,6 +162,78 @@ class ScheduleScreen(tk.Frame):
         self.grid_view.restore_position(self.state.grid_pos)
         if self.state.flash:
             self.grid_view.reveal(self.state.flash)
+
+    def _build_date_grid(self, parent):
+        """Настоящий день: действующий вариант с заменами. Основное расписание отсюда не меняется."""
+        self.state.pick = None
+        date = self.app.substitutions_state.date
+        columns, slots = self._columns()
+        if date.isoweekday() == SUNDAY:
+            label(parent, "Воскресенье: уроков нет.", color="muted").pack(pady=40)
+            return
+        if not columns or not slots:
+            self._build_empty(parent)
+            return
+        rows = day_lessons(self.repo, self.repo.active_version_id(), date, self.app.settings.week_offset)
+        lessons, levels = [], {}
+        for row in rows:
+            # у дополнительных уроков свои номера: отрицательный id не пересечётся с уроками расписания
+            key = -row["extra_id"] if row["extra_id"] else row["lesson_id"]
+            lessons.append({
+                "id": key, "weekday_id": date.isoweekday(), "lesson_slot_id": row["eff_slot_id"], "class_id": row["class_id"],
+                "teacher_id": row["eff_teacher_id"], "classroom_id": row["eff_room_id"], "subgroup": row["subgroup"],
+                "class_name": row["class_name"], "subject_short": row["eff_subject_short"], "teacher_short": row["eff_teacher"],
+                "room_number": row["eff_room"], "row": row,
+            })
+            flag = change_flag(row)
+            if flag:
+                levels[key] = (CONFLICT if row["is_cancelled"] else WARNING, describe_change(row), flag)
+        self.grid_view = ScheduleGrid(parent, self, columns, slots, lessons, levels)
+        self.grid_view.pack(side="left", fill="both", expand=True)
+        self.grid_view.restore_position(self.state.grid_pos)
+
+    def _move_for_day(self, lesson, col, slot_id):
+        """Перетаскивание на вкладке «На дату» меняет только этот день."""
+        row = lesson["row"]
+        if col.class_id != row["class_id"]:
+            self.app.toast(f"Это урок класса {row['class_name']}, его нельзя перенести в другой класс.")
+            return
+        if slot_id == row["eff_slot_id"]:
+            return
+        date = self.app.substitutions_state.date
+        offset, version = self.app.settings.week_offset, self.repo.active_version_id()
+        if row["extra_id"]:
+            result = check_extra(
+                self.repo, version, date, offset, row["class_id"], row["subgroup"], slot_id,
+                row["eff_teacher_id"], row["eff_subject_id"], row["eff_room_id"], row,
+            )
+        else:
+            result = check_substitution(
+                self.repo, version, date, offset, row, row["eff_teacher_id"], row["eff_subject_id"], row["eff_room_id"], slot_id,
+            )
+        if result.room_busy:
+            info_dialog(self.app, "Кабинет занят", f"{result.room_busy}. Нажмите на урок и выберите другой кабинет.", "conflict")
+            return
+
+        def action():
+            if row["extra_id"]:
+                self.repo.save_extra(
+                    row["extra_id"], version, date.isoformat(), row["week_type_id"], slot_id, row["class_id"], row["subgroup"],
+                    row["eff_subject_id"], row["eff_teacher_id"], row["eff_room_id"], row["note"] or "",
+                )
+                return
+            new_slot = None if slot_id == row["lesson_slot_id"] else slot_id
+            other = row["sub_teacher_id"] or row["sub_subject_id"] or row["sub_room_id"] or row["is_cancelled"] or row["note"]
+            if new_slot is None and not other:
+                self.repo.delete_substitution(row["lesson_id"], date.isoformat())
+            else:
+                self.repo.save_substitution(
+                    row["lesson_id"], date.isoformat(), row["sub_teacher_id"], row["sub_subject_id"], row["sub_room_id"],
+                    row["is_cancelled"], row["note"] or "", new_slot,
+                )
+
+        warning = result.warnings[0] if result.warnings else None
+        self.app.mutate(f"Урок перенесён на этот день. Обратите внимание: {warning}" if warning else "Урок перенесён на этот день", action)
 
     def _build_empty(self, parent):
         box = tk.Frame(parent, bg=c["bg"])
@@ -253,9 +333,10 @@ class ScheduleScreen(tk.Frame):
             days = [d for d in self.repo.weekdays() if d["id"] <= match["study_days"]]
             return [Column(d["name"], "", d["id"], class_id=match["id"]) for d in days], self.repo.slots(match["shift_id"])
         slots = self.repo.slots(shift)
-        if s.view in ("classes", "all"):
+        if s.view in ("classes", "all", "date"):
+            day = self.app.substitutions_state.date.isoweekday() if s.view == "date" else s.day
             columns = [
-                Column(x["name"], f"{x['students_count']} уч." if x["students_count"] else "", s.day, class_id=x["id"])
+                Column(x["name"], f"{x['students_count']} уч." if x["students_count"] else "", day, class_id=x["id"])
                 for x in self.repo.classes(shift)
             ]
         elif s.view == "teachers":
@@ -372,6 +453,9 @@ class ScheduleScreen(tk.Frame):
         self.app.mutate(message, action)
 
     def move_lesson(self, lesson, col, slot_id):
+        if self.state.view == "date":
+            self._move_for_day(lesson, col, slot_id)
+            return
         if col.class_id and col.class_id != lesson["class_id"]:
             self.app.toast(f"Это урок класса {lesson['class_name']}, его нельзя перенести в другой класс.")
             return
@@ -402,13 +486,17 @@ class ScheduleScreen(tk.Frame):
         self.app.mutate(f"Урок перенесён. Обратите внимание: {issues[0]}" if issues else "Урок перенесён", action)
 
     def lesson_clicked(self, lesson, cell):
-        if self.state.pick and cell:
+        if self.state.view == "date":
+            open_day_dialog(self.app, lesson["row"])
+        elif self.state.pick and cell:
             self.place(self.state.pick, cell[0], cell[1])
         else:
             LessonDialog(self, lesson=lesson)
 
     def cell_clicked(self, col, slot_id):
-        if self.state.pick:
+        if self.state.view == "date":
+            ExtraLessonDialog(self.app, class_id=col.class_id, slot_id=slot_id)
+        elif self.state.pick:
             self.place(self.state.pick, col, slot_id)
         else:
             LessonDialog(self, col=col, slot_id=slot_id)
