@@ -335,6 +335,12 @@ class Repo:
         )
 
     def move_lesson(self, lesson_id, day_id, slot_id, room_id) -> None:
+        # замены привязаны к дате, а у перенесённого урока другой день недели
+        self.conn.execute(
+            """DELETE FROM substitutions WHERE schedule_id = ?
+            AND ? <> (SELECT weekday_id FROM schedule WHERE id = ?)""",
+            (lesson_id, day_id, lesson_id),
+        )
         self.conn.execute(
             "UPDATE schedule SET weekday_id = ?, lesson_slot_id = ?, classroom_id = ? WHERE id = ?",
             (day_id, slot_id, room_id, lesson_id),

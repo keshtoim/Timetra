@@ -3,6 +3,7 @@ import sqlite3
 from pathlib import Path
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+SUBSTITUTIONS_PATH = Path(__file__).with_name("substitutions.sql")
 SCHEMA_VERSION = 1
 
 
@@ -21,6 +22,8 @@ def connect(path: Path) -> sqlite3.Connection:
             # одна транзакция: при ошибке не останется полусозданной базы
             schema = SCHEMA_PATH.read_text(encoding="utf-8")
             conn.executescript(f"BEGIN;\n{schema}\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;")
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'substitutions'").fetchone():
+            conn.executescript(f"BEGIN;\n{SUBSTITUTIONS_PATH.read_text(encoding='utf-8')}\nCOMMIT;")
     except Exception:
         conn.close()
         raise
