@@ -451,7 +451,9 @@ class ComposeDialog(Dialog):
             child.destroy()
         if self.mode.value():
             count = len(self.screen.repo.lessons(self.screen.version))
-            note(self.notes, f"Будут убраны уроки: {count}. Вернуть их можно кнопкой «Отменить».", "warning").pack(fill="x", pady=(0, 4))
+            substitutions = self.screen.repo.version_substitutions_count(self.screen.version)
+            extra = f" Вместе с ними удалятся замены: {substitutions}." if substitutions else ""
+            note(self.notes, f"Будут убраны уроки: {count}.{extra} Вернуть их можно кнопкой «Отменить».", "warning").pack(fill="x", pady=(0, 4))
         missing = []
         for wl in self.screen.workload_by_id.values():
             if not self.screen.repo.subject_scores(wl["subject_id"]).get(wl["grade"]) and wl["subject_name"] not in missing:

@@ -10,7 +10,7 @@ ICONS = {
     "settings": "", "help": "", "add": "", "edit": "", "delete": "",
     "undo": "", "check": "", "close": "", "copy": "", "star": "",
     "upload": "", "download": "", "wand": "", "save": "",
-    "collapse": "", "expand": "", "day": "", "people": "", "home": "",
+    "replace": "", "collapse": "", "expand": "", "day": "", "people": "", "home": "",
 }
 
 tips_enabled = True

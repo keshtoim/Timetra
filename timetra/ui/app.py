@@ -15,6 +15,7 @@ from timetra.ui.refs_screen import RefsScreen
 from timetra.ui.schedule_grid import ScheduleGrid
 from timetra.ui.schedule_screen import ScheduleScreen, ScheduleState
 from timetra.ui.settings_screen import SettingsScreen
+from timetra.ui.substitutions_screen import SubstitutionsScreen, SubstitutionsState
 from timetra.ui.theme import colors as c
 from timetra.ui.theme import font
 from timetra.ui.widgets import ICONS, RoundFrame, Scroll, badge, set_tips_enabled, tip
@@ -26,6 +27,7 @@ NAV_COLLAPSED_WIDTH = 58
 
 SCREENS = [
     ("schedule", "calendar", "Расписание", "Главный экран: сетка уроков по дням и классам", ScheduleScreen),
+    ("substitutions", "replace", "Замены", "Изменения в уроках на конкретный день", SubstitutionsScreen),
     ("check", "warning", "Проверка", "Список накладок и других ошибок в расписании", CheckScreen),
     ("load", "book", "Нагрузка", "Кто какой предмет ведёт и сколько уроков нужно поставить", LoadScreen),
     ("refs", "list", "Справочники", "Учителя, классы, предметы, кабинеты и звонки", RefsScreen),
@@ -62,6 +64,7 @@ class App(tk.Tk):
         self.screen = "schedule"
         self.schedule_state = ScheduleState()
         self.exchange_state = ExchangeState()
+        self.substitutions_state = SubstitutionsState()
         self.version_id = next(
             (v["id"] for v in self.repo.versions() if v["is_active"]), self.repo.versions()[0]["id"]
         )
