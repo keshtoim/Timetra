@@ -20,6 +20,7 @@ from timetra.io.exchange import (
     template_workbook,
     workbook_help,
 )
+from timetra.io.grid import read_schedule_grid, write_schedule_grid
 from timetra.io.tables import TableError, read_table, read_workbook, write_table, write_workbook
 from timetra.ui.dialogs import info_dialog
 from timetra.ui.theme import colors as c
@@ -27,6 +28,7 @@ from timetra.ui.widgets import Btn, DataTable, Scroll, Seg, Select, badge, label
 
 PREVIEW_ROWS = 6
 ALL = "all"
+GRID = "grid"
 XLSX_ONLY = [("Excel (.xlsx)", "*.xlsx")]
 FILE_TYPES = [
     ("Excel (.xlsx)", "*.xlsx"), ("Excel 97-2003 (.xls)", "*.xls"),
@@ -41,7 +43,7 @@ FORMATS = [
 @dataclass
 class ExchangeState:
     direction: str = "export"
-    export_kind: str = "schedule"
+    export_kind: str = "grid"
     import_kind: str = "teachers"
     fmt: str = ".xlsx"
     results: list[tuple[Kind, list[RowResult]]] | None = None  # по одному элементу на лист
@@ -84,6 +86,13 @@ class ExchangeScreen(tk.Frame):
         row.pack(fill="x")
         label(row, "Что сохранить", 9, color="muted", bg="surface").pack(side="left", padx=(0, 6))
         Select(row, self._kind_items(), s.export_kind, self._set_export_kind, width=26).pack(side="left")
+        if s.export_kind == GRID:
+            Btn(row, "Сохранить файл", "save", self.save_export, "primary").pack(side="left", padx=(14, 0))
+            label(
+                card, "Оформленная таблица Excel для печати: дни и уроки по строкам, классы по столбцам, чётная и нечётная недели рядом. Такой файл можно потом загрузить обратно.",
+                9, color="muted", bg="surface", anchor="w", wraplength=800, justify="left",
+            ).pack(fill="x", pady=(8, 0))
+            return
         if s.export_kind == ALL:
             Btn(row, "Сохранить файл", "save", self.save_export, "primary").pack(side="left", padx=(14, 0))
             self._build_book_summary(card)
@@ -103,7 +112,7 @@ class ExchangeScreen(tk.Frame):
             label(scroll.inner, "Пока нечего сохранять: здесь нет данных.", color="muted").pack(anchor="w", pady=10)
 
     def _kind_items(self):
-        return [(ALL, "Всё сразу: один файл .xlsx"), *[(k.key, k.title) for k in KINDS]]
+        return [(GRID, "Общее расписание школы: сетка .xlsx"), (ALL, "Всё сразу: один файл .xlsx"), *[(k.key, k.title) for k in KINDS]]
 
     def _build_book_summary(self, card):
         label(
@@ -126,7 +135,25 @@ class ExchangeScreen(tk.Frame):
         self.state.fmt = value
         self.app.refresh()
 
+    def _save_grid(self, title, file_name, empty):
+        path = filedialog.asksaveasfilename(
+            parent=self.app, title=title, defaultextension=".xlsx", initialfile=file_name, filetypes=XLSX_ONLY,
+        )
+        if path:
+            self.write_grid(Path(path), empty)
+
+    def write_grid(self, path: Path, empty: bool):
+        try:
+            write_schedule_grid(self.repo, self.app.version_id, path, empty)
+        except TableError as error:
+            info_dialog(self.app, "Не удалось сохранить", str(error))
+            return
+        self.app.toast(f"Файл сохранён: {path.name}")
+
     def save_export(self):
+        if self.state.export_kind == GRID:
+            self._save_grid("Куда сохранить файл", "Расписание школы.xlsx", False)
+            return
         if self.state.export_kind == ALL:
             path = filedialog.asksaveasfilename(
                 parent=self.app, title="Куда сохранить файл", defaultextension=".xlsx",
@@ -178,11 +205,10 @@ class ExchangeScreen(tk.Frame):
             tooltip="Подойдут файлы .xlsx, .xls, .csv и .txt",
         ).pack(side="left", padx=(8, 0))
         if s.results is None:
-            hint = (
-                "Заполните нужные листы шаблона и загрузите файл. Пустые листы будут пропущены."
-                if s.import_kind == ALL else
-                "Заполните шаблон и загрузите его. Порядок: сначала кабинеты и предметы, потом учителя и классы, затем нагрузка и расписание."
-            )
+            hint = {
+                GRID: "Шаблон — сетка с вашими классами и звонками. Сначала заполните справочники и нагрузку: уроки из сетки сверяются с ними.",
+                ALL: "Заполните нужные листы шаблона и загрузите файл. Пустые листы будут пропущены.",
+            }.get(s.import_kind, "Заполните шаблон и загрузите его. Порядок: сначала кабинеты и предметы, потом учителя и классы, затем нагрузка и расписание.")
             label(
                 card, hint,
                 9, color="muted", bg="surface", anchor="w", wraplength=800, justify="left",
@@ -197,6 +223,9 @@ class ExchangeScreen(tk.Frame):
         self.app.refresh()
 
     def save_template(self):
+        if self.state.import_kind == GRID:
+            self._save_grid("Куда сохранить шаблон", "Шаблон - расписание школы.xlsx", True)
+            return
         if self.state.import_kind == ALL:
             path = filedialog.asksaveasfilename(
                 parent=self.app, title="Куда сохранить шаблон", defaultextension=".xlsx",
@@ -214,7 +243,7 @@ class ExchangeScreen(tk.Frame):
             self._write(Path(path), [col.title for col in kind.columns], [], template_help(kind))
 
     def choose_file(self):
-        types = XLSX_ONLY if self.state.import_kind == ALL else [("Таблицы", "*.xlsx *.xls *.csv *.txt"), *FILE_TYPES]
+        types = XLSX_ONLY if self.state.import_kind in (ALL, GRID) else [("Таблицы", "*.xlsx *.xls *.csv *.txt"), *FILE_TYPES]
         path = filedialog.askopenfilename(parent=self.app, title="Выберите файл", filetypes=types)
         if path:
             self.load_file(Path(path))
@@ -222,7 +251,11 @@ class ExchangeScreen(tk.Frame):
     def load_file(self, path: Path):
         s = self.state
         try:
-            if s.import_kind == ALL:
+            if s.import_kind == GRID:
+                kind = kind_by_key("schedule")
+                s.results = [(kind, parse_rows(self.repo, kind, read_schedule_grid(path), self.app.version_id))]
+                s.sheets = None
+            elif s.import_kind == ALL:
                 sheets = read_workbook(path)
                 s.results = preview_workbook(self.repo, sheets, self.app.version_id)
                 s.sheets = sheets
