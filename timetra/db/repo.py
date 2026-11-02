@@ -312,6 +312,61 @@ class Repo:
         )
         return [r for r in rows if r["id"] not in skip_ids]
 
+    def lessons_on_date(self, version_id, week_id, day_id, lesson_date):
+        """Уроки дня с заменами: base_* из расписания, eff_* то, что будет на самом деле."""
+        return self._all(
+            f"""SELECT sc.id AS lesson_id, sc.workload_id, sc.lesson_slot_id, sc.weekday_id, ls.number AS lesson_number,
+                ls.starts_at, ls.ends_at, w.class_id, w.subgroup, c.grade, c.grade || c.letter AS class_name,
+                w.teacher_id AS base_teacher_id, {TEACHER_SHORT} AS base_teacher,
+                w.subject_id AS base_subject_id, s.name AS base_subject,
+                sc.classroom_id AS base_room_id, r.number AS base_room,
+                x.id AS substitution_id, COALESCE(x.is_cancelled, 0) AS is_cancelled, x.note,
+                COALESCE(x.teacher_id, w.teacher_id) AS eff_teacher_id,
+                COALESCE(x.subject_id, w.subject_id) AS eff_subject_id,
+                COALESCE(x.classroom_id, sc.classroom_id) AS eff_room_id,
+                {TEACHER_SHORT.replace("t.", "nt.")} AS new_teacher,
+                ns.name AS new_subject, nr.number AS new_room,
+                x.teacher_id AS sub_teacher_id, x.subject_id AS sub_subject_id, x.classroom_id AS sub_room_id
+            FROM schedule sc
+            JOIN workload w ON w.id = sc.workload_id
+            JOIN classes c ON c.id = w.class_id
+            JOIN subjects s ON s.id = w.subject_id
+            JOIN teachers t ON t.id = w.teacher_id
+            JOIN lesson_slots ls ON ls.id = sc.lesson_slot_id
+            LEFT JOIN classrooms r ON r.id = sc.classroom_id
+            LEFT JOIN substitutions x ON x.schedule_id = sc.id AND x.lesson_date = ?
+            LEFT JOIN teachers nt ON nt.id = x.teacher_id
+            LEFT JOIN subjects ns ON ns.id = x.subject_id
+            LEFT JOIN classrooms nr ON nr.id = x.classroom_id
+            WHERE sc.version_id = ? AND sc.week_type_id = ? AND sc.weekday_id = ?
+            ORDER BY c.grade, c.letter, ls.number, w.subgroup""",
+            lesson_date, version_id, week_id, day_id,
+        )
+
+    def save_substitution(self, lesson_id, lesson_date, teacher_id, subject_id, room_id, cancelled, note) -> None:
+        self.conn.execute(
+            """INSERT INTO substitutions (schedule_id, lesson_date, teacher_id, subject_id, classroom_id, is_cancelled, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (schedule_id, lesson_date) DO UPDATE SET teacher_id = excluded.teacher_id,
+                subject_id = excluded.subject_id, classroom_id = excluded.classroom_id,
+                is_cancelled = excluded.is_cancelled, note = excluded.note""",
+            (lesson_id, lesson_date, teacher_id, subject_id, room_id, int(cancelled), _blank_to_none(note)),
+        )
+
+    def delete_substitution(self, lesson_id, lesson_date) -> None:
+        self.conn.execute("DELETE FROM substitutions WHERE schedule_id = ? AND lesson_date = ?", (lesson_id, lesson_date))
+
+    def version_substitutions_count(self, version_id) -> int:
+        return self._one(
+            """SELECT COUNT(*) AS n FROM substitutions x JOIN schedule sc ON sc.id = x.schedule_id
+            WHERE sc.version_id = ?""",
+            version_id,
+        )["n"]
+
+    def active_version_id(self) -> int:
+        row = self._one("SELECT id FROM schedule_versions WHERE is_active = 1")
+        return row["id"] if row else self.versions()[0]["id"]
+
     def conflict_pairs(self, version_id):
         return self._all("SELECT * FROM schedule_conflicts WHERE version_id = ?", version_id)
 

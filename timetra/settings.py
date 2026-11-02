@@ -9,6 +9,7 @@ class Settings:
     big_text: bool = False
     tips: bool = True
     nav_collapsed: bool = False
+    week_offset: int = 0  # сдвиг чётности недель под отсчёт школы
 
 
 def load_settings(path: Path) -> Settings:

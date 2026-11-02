@@ -1,3 +1,4 @@
+import datetime
 import sqlite3
 import tempfile
 import unittest
@@ -5,6 +6,15 @@ from pathlib import Path
 
 from tests.test_repo import RepoCase
 from timetra.db.connection import SCHEMA_PATH, connect
+from timetra.services.substitutions import (
+    check_substitution,
+    day_lessons,
+    describe_change,
+    export_rows,
+    free_teacher_ids,
+    parse_date,
+    week_for_date,
+)
 
 MONDAY, NEXT_MONDAY, TUESDAY = "2026-11-02", "2026-11-09", "2026-11-03"
 
@@ -88,6 +98,104 @@ class TableTest(SubstitutionCase):
         with self.conn:
             self.repo.move_lesson(self.lesson, 2, self.slot, self.r1)
         self.assertIsNone(self.conn.execute("SELECT 1 FROM substitutions").fetchone())
+
+
+class WeekTest(unittest.TestCase):
+    def test_parity_alternates_and_ignores_year_boundary(self):
+        self.assertEqual(week_for_date(datetime.date(2024, 1, 1), 0), 1)
+        self.assertEqual(week_for_date(datetime.date(2024, 1, 7), 0), 1)
+        self.assertEqual(week_for_date(datetime.date(2024, 1, 8), 0), 2)
+        monday = datetime.date(2026, 12, 28)
+        self.assertNotEqual(week_for_date(monday, 0), week_for_date(monday + datetime.timedelta(days=7), 0))
+
+    def test_offset_swaps(self):
+        date = datetime.date(2026, 11, 2)
+        self.assertNotEqual(week_for_date(date, 0), week_for_date(date, 1))
+
+    def test_parse_date(self):
+        self.assertEqual(parse_date(" 02.11.2026 "), datetime.date(2026, 11, 2))
+        self.assertIsNone(parse_date("31.02.2026"))
+        self.assertIsNone(parse_date("завтра"))
+
+
+class LogicTest(SubstitutionCase):
+    def setUp(self):
+        super().setUp()
+        self.date = datetime.date.fromisoformat(MONDAY)
+        self.offset = 0 if week_for_date(self.date, 0) == 1 else 1
+
+    def rows(self, date=None):
+        return day_lessons(self.repo, self.ver, date or self.date, self.offset)
+
+    def row(self, lesson):
+        return next(r for r in self.rows() if r["lesson_id"] == lesson)
+
+    def check(self, lesson, teacher, subject, room):
+        return check_substitution(self.repo, self.ver, self.date, self.offset, self.row(lesson), teacher, subject, room)
+
+    def save(self, lesson, teacher=None, subject=None, room=None, cancelled=False, note="", date=MONDAY):
+        with self.conn:
+            self.repo.save_substitution(lesson, date, teacher, subject, room, cancelled, note)
+
+    def test_effective_values(self):
+        self.save(self.lesson, teacher=self.t2, subject=self.music, note="болеет")
+        row = self.row(self.lesson)
+        self.assertEqual((row["eff_teacher_id"], row["base_teacher_id"]), (self.t2, self.teacher))
+        self.assertEqual(row["new_subject"], "Музыка")
+        self.assertEqual(row["eff_room_id"], self.r1)
+        self.assertEqual(describe_change(row), "Учитель: Петрова А., Предмет: Музыка")
+
+    def test_substitution_only_on_its_date(self):
+        self.save(self.lesson, teacher=self.t2)
+        other = datetime.date.fromisoformat("2026-11-16")
+        self.assertIsNone(next(r for r in self.rows(other) if r["lesson_id"] == self.lesson)["substitution_id"])
+
+    def test_resave_replaces(self):
+        self.save(self.lesson, teacher=self.t2)
+        self.save(self.lesson, cancelled=True)
+        row = self.row(self.lesson)
+        self.assertEqual(row["eff_teacher_id"], self.teacher)
+        self.assertEqual(describe_change(row), "Урока не будет")
+
+    def test_lessons_of_other_week_not_shown(self):
+        self.assertEqual(self.rows(datetime.date.fromisoformat(NEXT_MONDAY)), [])
+
+    def test_sunday_empty(self):
+        self.assertEqual(self.rows(datetime.date(2026, 11, 8)), [])
+
+    def test_busy_teacher_warns_room_blocks(self):
+        result = self.check(self.lesson, self.t2, self.subject, None)
+        self.assertIsNone(result.room_busy)
+        self.assertIn("5Б", result.warnings[0])
+        self.assertIn("занят", self.check(self.lesson, self.teacher, self.subject, self.r2).room_busy)
+
+    def test_check_counts_other_substitutions(self):
+        self.save(self.lesson2, cancelled=True)
+        result = self.check(self.lesson, self.t2, self.subject, self.r2)
+        self.assertIsNone(result.room_busy)
+        self.assertEqual(result.warnings, [])
+
+    def test_free_teachers(self):
+        with self.conn:
+            t3 = self.repo.save_teacher(None, "Сидоров", "Иван", "")
+            t4 = self.repo.save_teacher(None, "Орлов", "Пётр", "", [], [(1, self.slot)])
+        free = free_teacher_ids(self.repo, self.ver, self.date, self.offset, self.row(self.lesson))
+        self.assertIn(t3, free)
+        self.assertIn(self.teacher, free)
+        self.assertNotIn(self.t2, free)
+        self.assertNotIn(t4, free)
+
+    def test_unqualified_warns(self):
+        with self.conn:
+            t3 = self.repo.save_teacher(None, "Сидоров", "Иван", "", [self.music])
+        self.assertIn("не отмечен", self.check(self.lesson, t3, self.subject, None).warnings[0])
+
+    def test_export_only_changes(self):
+        self.save(self.lesson, teacher=self.t2, note="болеет")
+        rows = export_rows(self.rows())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], "5А")
+        self.assertEqual(rows[0][-1], "болеет")
 
 
 class UpgradeTest(unittest.TestCase):
