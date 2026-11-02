@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from tests.test_repo import RepoCase
-from timetra.db.connection import SCHEMA_PATH, connect
+from timetra.db.connection import SCHEMA_PATH, SUBSTITUTIONS_PATH, connect
 from timetra.services.substitutions import (
     check_substitution,
     day_lessons,
@@ -98,6 +98,75 @@ class TableTest(SubstitutionCase):
         with self.conn:
             self.repo.move_lesson(self.lesson, 2, self.slot, self.r1)
         self.assertIsNone(self.conn.execute("SELECT 1 FROM substitutions").fetchone())
+
+
+class DayChangesTableTest(SubstitutionCase):
+    def setUp(self):
+        super().setUp()
+        self.slot2 = self.repo.slots(1)[1]["id"]
+        with self.conn:
+            self.repo.add_lesson(self.ver, self.wl2, 1, 1, self.slot2, self.r1)
+        self.later = next(x["id"] for x in self.repo.lessons(self.ver) if x["lesson_slot_id"] == self.slot2)
+
+    def move(self, lesson, slot, room=None, date=MONDAY):
+        self.conn.execute(
+            "INSERT INTO substitutions (schedule_id, lesson_date, lesson_slot_id, classroom_id) VALUES (?, ?, ?, ?)",
+            (lesson, date, slot, room),
+        )
+
+    def extra(self, slot, room, date=MONDAY, week=1):
+        return self.conn.execute(
+            """INSERT INTO extra_lessons (version_id, lesson_date, week_type_id, lesson_slot_id, class_id, subject_id,
+            teacher_id, classroom_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (self.ver, date, week, slot, self.cls, self.subject, self.teacher, room),
+        ).lastrowid
+
+    def test_move_into_busy_room_rejected(self):
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.move(self.later, self.slot)
+
+    def test_move_frees_old_slot_for_extra_lesson(self):
+        self.move(self.lesson, self.repo.slots(1)[3]["id"])
+        self.extra(self.slot, self.r1)
+
+    def test_move_with_other_room_allowed(self):
+        with self.conn:
+            self.repo.save_room(None, "103", 30, 1)
+        r3 = next(r["id"] for r in self.repo.rooms() if r["number"] == "103")
+        self.move(self.later, self.slot, r3)
+
+    def test_extra_in_busy_room_rejected_only_on_that_date(self):
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.extra(self.slot, self.r1)
+        self.extra(self.slot, self.r1, date=TUESDAY)
+
+    def test_extra_blocks_other_extra_and_move(self):
+        third = self.repo.slots(1)[2]["id"]
+        self.extra(third, self.r1)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.extra(third, self.r1)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.move(self.lesson, third)
+
+    def test_extra_may_keep_own_room_on_update(self):
+        third = self.repo.slots(1)[2]["id"]
+        extra = self.extra(third, self.r1)
+        self.conn.execute("UPDATE extra_lessons SET note = 'x', classroom_id = ? WHERE id = ?", (self.r1, extra))
+
+    def test_cancelled_lesson_frees_room_for_extra(self):
+        self.insert(self.lesson, cancelled=1)
+        self.extra(self.slot, self.r1)
+
+    def test_deleted_with_version(self):
+        with self.conn:
+            copy = self.repo.copy_version(self.ver, "Копия")
+            self.conn.execute(
+                """INSERT INTO extra_lessons (version_id, lesson_date, week_type_id, lesson_slot_id, class_id, subject_id,
+                teacher_id) VALUES (?, ?, 1, ?, ?, ?, ?)""",
+                (copy, MONDAY, self.slot, self.cls, self.subject, self.teacher),
+            )
+            self.conn.execute("DELETE FROM schedule_versions WHERE id = ?", (copy,))
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM extra_lessons").fetchone())
 
 
 class WeekTest(unittest.TestCase):
@@ -199,6 +268,27 @@ class LogicTest(SubstitutionCase):
 
 
 class UpgradeTest(unittest.TestCase):
+    def test_database_with_first_substitutions_table_upgraded_keeping_rows(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            path = Path(tmp) / "old.db"
+            old = sqlite3.connect(path)
+            old.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+            old.executescript(SUBSTITUTIONS_PATH.read_text(encoding="utf-8"))
+            old.execute("PRAGMA user_version = 2")
+            old.execute("INSERT INTO teachers (id, last_name, first_name) VALUES (1, 'И', 'М')")
+            old.execute("INSERT INTO subjects (id, name) VALUES (1, 'М')")
+            old.execute("INSERT INTO classes (id, grade, letter, shift_id) VALUES (1, 5, 'А', 1)")
+            old.execute("INSERT INTO workload (id, class_id, subject_id, teacher_id, lessons_per_fortnight) VALUES (1, 1, 1, 1, 2)")
+            old.execute("INSERT INTO schedule_versions (id, name) VALUES (1, 'В')")
+            old.execute("INSERT INTO lesson_slots (id, shift_id, number) VALUES (1, 1, 1)")
+            old.execute("INSERT INTO schedule (id, version_id, workload_id, week_type_id, weekday_id, lesson_slot_id) VALUES (1, 1, 1, 1, 1, 1)")
+            old.execute("INSERT INTO substitutions (schedule_id, lesson_date, note) VALUES (1, ?, 'старая')", (MONDAY,))
+            old.commit()
+            old.close()
+            conn = connect(path)
+            self.assertEqual(conn.execute("SELECT note FROM substitutions").fetchone()[0], "старая")
+            conn.close()
+
     def test_old_database_gets_table_and_keeps_data(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             path = Path(tmp) / "old.db"
@@ -209,7 +299,8 @@ class UpgradeTest(unittest.TestCase):
             old.commit()
             old.close()
             conn = connect(path)
-            conn.execute("SELECT * FROM substitutions")
+            conn.execute("SELECT lesson_slot_id FROM substitutions")
+            conn.execute("SELECT * FROM extra_lessons")
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM subjects").fetchone()[0], 1)
             self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 2)
             conn.close()
